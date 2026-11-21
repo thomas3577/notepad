@@ -1,0 +1,35 @@
+# Builds the MSI and attaches it to every published GitHub release.
+name: Release MSI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  msi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build exe
+        run: cargo build --release --locked
+
+      - name: Install WiX
+        run: |
+          dotnet tool install --global wix --version 7.0.1
+          wix eula accept wix7
+
+      - name: Build and upload MSI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          $msi = "target\notepad-$($env:TAG.TrimStart('v'))-x64.msi"
+          wix build wix\main.wxs -o $msi
+          gh release upload $env:TAG $msi --clobber
