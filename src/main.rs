@@ -3,7 +3,8 @@
 use eframe::egui;
 use egui::text::{CCursor, CCursorRange};
 use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 // ---------- Encoding ----------
 
@@ -164,6 +165,35 @@ fn ask(msg: &str) -> bool {
         == MessageDialogResult::Yes
 }
 
+/// Write to a temp file next to the target, then rename over it, so a crash or
+/// power loss mid-save never leaves a truncated file.
+// ponytail: rename replaces symlinks/hardlinks with a plain file and the file gets
+// the folder's default permissions; fine for a notepad.
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".notepad-tmp");
+    let tmp = PathBuf::from(tmp);
+    let result = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// 1-based line and column of char index `idx`.
+fn line_col(text: &str, idx: usize) -> (usize, usize) {
+    let before = &text[..char_to_byte(text, idx)];
+    let line = before.matches('\n').count() + 1;
+    let col = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+    (line, col)
+}
+
 #[derive(Default)]
 struct Notepad {
     text: String,
@@ -178,6 +208,10 @@ struct Notepad {
     replacement: String,
     not_found: bool,
     scroll_to: Option<usize>,
+    no_wrap: bool,
+    last_title: String,
+    /// Text zoom factor, 1.0 = 100 %.
+    zoom: f32,
 }
 
 impl Notepad {
@@ -235,7 +269,7 @@ impl Notepad {
             }
             None => return,
         };
-        match std::fs::write(&path, bytes) {
+        match write_atomic(&path, &bytes) {
             Ok(()) => (self.path, self.dirty) = (Some(path), false),
             Err(e) => error(format!("Could not save file: {e}")),
         }
@@ -294,9 +328,11 @@ impl eframe::App for Notepad {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
-        let [n, o, s, f, h, f3, esc] = ctx.input_mut(|i| {
+        let [save_as, n, o, s, f, h, f3, esc, plus, equals, minus, zero] = ctx.input_mut(|i| {
             use egui::{Key, KeyboardShortcut as K, Modifiers as M};
             [
+                // Ctrl+Shift+S first: egui's Ctrl+S would also match it (extra Shift is ignored)
+                K::new(M::COMMAND | M::SHIFT, Key::S),
                 K::new(M::COMMAND, Key::N),
                 K::new(M::COMMAND, Key::O),
                 K::new(M::COMMAND, Key::S),
@@ -304,15 +340,31 @@ impl eframe::App for Notepad {
                 K::new(M::COMMAND, Key::H),
                 K::new(M::NONE, Key::F3),
                 K::new(M::NONE, Key::Escape),
+                K::new(M::COMMAND, Key::Plus),
+                K::new(M::COMMAND, Key::Equals),
+                K::new(M::COMMAND, Key::Minus),
+                K::new(M::COMMAND, Key::Num0),
             ]
             .map(|k| i.consume_shortcut(&k))
         });
+        if save_as { self.save(true); }
         if n { self.new_file(); }
         if o { self.open(); }
         if s { self.save(false); }
         if f || h { (self.find_open, self.find_focus) = (true, true); }
         if f3 { self.find_next(&ctx); }
         if esc { self.find_open = false; }
+        if plus || equals { self.zoom += 0.1; }
+        if minus { self.zoom -= 0.1; }
+        if zero { self.zoom = 1.0; }
+        self.zoom *= ctx.input(|i| i.zoom_delta()); // Ctrl + mouse wheel
+
+        // File dropped onto the window
+        if let Some(path) = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf())) {
+            if self.confirm_discard() {
+                self.load(path);
+            }
+        }
 
         // Close guard
         if ctx.input(|i| i.viewport().close_requested()) && !self.confirm_discard() {
@@ -325,13 +377,21 @@ impl eframe::App for Notepad {
                     if ui.button("New (Ctrl+N)").clicked() { self.new_file(); }
                     if ui.button("Open… (Ctrl+O)").clicked() { self.open(); }
                     if ui.button("Save (Ctrl+S)").clicked() { self.save(false); }
-                    if ui.button("Save As…").clicked() { self.save(true); }
+                    if ui.button("Save As… (Ctrl+Shift+S)").clicked() { self.save(true); }
                 });
                 ui.menu_button("Edit", |ui| {
                     if ui.button("Find/Replace (Ctrl+F)").clicked() {
                         (self.find_open, self.find_focus) = (true, true);
                     }
                     if ui.button("Find Next (F3)").clicked() { self.find_next(&ctx); }
+                });
+                ui.menu_button("View", |ui| {
+                    let mut wrap = !self.no_wrap;
+                    if ui.checkbox(&mut wrap, "Word Wrap").changed() { self.no_wrap = !wrap; }
+                    ui.separator();
+                    if ui.button("Zoom In (Ctrl+Plus)").clicked() { self.zoom += 0.1; }
+                    if ui.button("Zoom Out (Ctrl+Minus)").clicked() { self.zoom -= 0.1; }
+                    if ui.button("Reset Zoom (Ctrl+0)").clicked() { self.zoom = 1.0; }
                 });
                 ui.menu_button("Encoding", |ui| {
                     for e in Enc::ALL {
@@ -367,22 +427,48 @@ impl eframe::App for Notepad {
             });
         }
 
+        self.zoom = self.zoom.clamp(0.5, 4.0);
+
         egui::Panel::bottom("status").show(ui, |ui| {
-            ui.label(format!("{}  |  {}", self.enc.name(), if self.crlf { "CRLF" } else { "LF" }));
+            let cursor = egui::TextEdit::load_state(&ctx, editor_id())
+                .and_then(|s| s.cursor.char_range())
+                .map_or(0, |r| r.primary.index.into());
+            let (ln, col) = line_col(&self.text, cursor);
+            ui.label(format!(
+                "Ln {ln}, Col {col}  |  {:.0}%  |  {}  |  {}",
+                self.zoom * 100.0,
+                self.enc.name(),
+                if self.crlf { "CRLF" } else { "LF" }
+            ));
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
+            let scroll = if self.no_wrap { egui::ScrollArea::both() } else { egui::ScrollArea::vertical() };
+            scroll.show(ui, |ui| {
                 ui.horizontal_top(|ui| {
-                    let font = egui::TextStyle::Monospace.resolve(ui.style());
+                    let mut font = egui::TextStyle::Monospace.resolve(ui.style());
+                    font.size *= self.zoom;
                     let color = ui.visuals().weak_text_color();
                     let lines = self.text.matches('\n').count() + 1;
                     let w = ui.painter().layout_no_wrap(lines.to_string(), font.clone(), color).size().x;
                     let (gutter, _) = ui.allocate_exact_size(egui::vec2(w + 8.0, 0.0), egui::Sense::hover());
 
+                    // Own layouter: zoomed font, and no wrapping when Word Wrap is off.
+                    let (editor_font, wrap) = (font.clone(), !self.no_wrap);
+                    let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                        let width = if wrap { wrap_width } else { f32::INFINITY };
+                        let job = egui::text::LayoutJob::simple(
+                            buf.as_str().to_owned(),
+                            editor_font.clone(),
+                            ui.visuals().text_color(),
+                            width,
+                        );
+                        ui.ctx().fonts_mut(|f| f.layout_job(job))
+                    };
+
                     let out = egui::TextEdit::multiline(&mut self.text)
                         .id(editor_id())
-                        .font(egui::TextStyle::Monospace)
+                        .layouter(&mut layouter)
                         .frame(egui::Frame::NONE)
                         .desired_width(f32::INFINITY)
                         .min_size(ui.available_size())
@@ -390,12 +476,19 @@ impl eframe::App for Notepad {
                     if out.response.changed() { self.dirty = true; }
 
                     // Line numbers: one per logical line, at the first wrapped row of that line.
+                    // Only rows inside the visible area are painted (large files).
+                    let clip = ui.clip_rect();
                     let mut line = 1;
                     let mut starts_line = true;
                     for row in &out.galley.rows {
+                        let y = out.galley_pos.y + row.pos.y;
+                        if y > clip.bottom() {
+                            break;
+                        }
                         if starts_line {
-                            let y = out.galley_pos.y + row.pos.y;
-                            ui.painter().text(egui::pos2(gutter.right() - 6.0, y), egui::Align2::RIGHT_TOP, line, font.clone(), color);
+                            if y + row.rect().height() >= clip.top() {
+                                ui.painter().text(egui::pos2(gutter.right() - 6.0, y), egui::Align2::RIGHT_TOP, line, font.clone(), color);
+                            }
                             line += 1;
                         }
                         starts_line = row.ends_with_newline;
@@ -409,13 +502,18 @@ impl eframe::App for Notepad {
             });
         });
 
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        // Only on change: every viewport command triggers a repaint, which would loop forever.
+        let title = self.title();
+        if title != self.last_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.last_title = title;
+        }
     }
 }
 
 fn main() -> eframe::Result {
     // "Open with" / drag onto the .exe passes the file path as first argument.
-    let mut app = Notepad::default();
+    let mut app = Notepad { zoom: 1.0, ..Default::default() };
     if let Some(path) = std::env::args_os().nth(1) {
         app.load(path.into());
     }
@@ -424,7 +522,15 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default().with_icon(icon),
         ..Default::default()
     };
-    eframe::run_native("Notepad", options, Box::new(|_| Ok(Box::new(app))))
+    eframe::run_native(
+        "Notepad",
+        options,
+        Box::new(|cc| {
+            // We zoom only the text (like Windows Notepad), not egui's whole UI.
+            cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+            Ok(Box::new(app))
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -453,6 +559,30 @@ mod tests {
         assert_eq!(find("äb äb", "äb", 4, true), Some((0, 2)));
         assert_eq!(find("abc", "x", 0, true), None);
         assert_eq!(find("abc", "", 0, true), None);
+    }
+
+    #[test]
+    fn atomic_save_overwrites_and_cleans_up() {
+        let dir = std::env::temp_dir().join(format!("notepad-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        write_atomic(&file, b"first").unwrap();
+        write_atomic(&file, b"second").unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"second");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "temp file left behind");
+        // failure (target is a directory) must not leave a temp file either
+        assert!(write_atomic(&dir, b"x").is_err());
+        assert!(!dir.with_extension("notepad-tmp").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn line_and_column() {
+        assert_eq!(line_col("", 0), (1, 1));
+        assert_eq!(line_col("ab\ncäd", 1), (1, 2));
+        assert_eq!(line_col("ab\ncäd", 3), (2, 1));
+        assert_eq!(line_col("ab\ncäd", 5), (2, 3));
+        assert_eq!(line_col("ab\n", 3), (2, 1));
     }
 
     #[test]

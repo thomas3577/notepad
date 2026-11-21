@@ -6,13 +6,16 @@ A simple text editor written in Rust, built with [egui/eframe](https://github.co
 
 ## Features
 
-- New, Open, Save, Save As
+- New, Open, Save, Save As; saving is crash-safe (temp file + rename)
 - Line numbers (correct with word wrap)
+- Word wrap on/off (View menu)
+- Text zoom (Ctrl+Plus/Minus/0, Ctrl+mouse wheel)
+- Status bar: line, column, zoom, encoding, line ending
 - Find & Replace (Find Next, Replace, Replace All), case-insensitive by default ("Match case" option)
 - Encodings: UTF-8, UTF-8 with BOM, UTF-16 LE/BE, ANSI (Windows-1252)
 - Line endings: CRLF and LF are detected and kept on save
 - Warning before discarding unsaved changes
-- Opens a file passed on the command line (Explorer "Open with", drag onto the exe)
+- Opens files via Explorer "Open with", the command line, or drag & drop onto the window or the exe
 
 ## Keyboard shortcuts
 
@@ -21,9 +24,13 @@ A simple text editor written in Rust, built with [egui/eframe](https://github.co
 | Ctrl+N         | New              |
 | Ctrl+O         | Open             |
 | Ctrl+S         | Save             |
+| Ctrl+Shift+S   | Save As          |
 | Ctrl+F, Ctrl+H | Find/Replace     |
 | F3             | Find Next        |
 | Esc            | Close search bar |
+| Ctrl+Plus      | Zoom in          |
+| Ctrl+Minus     | Zoom out         |
+| Ctrl+0         | Reset zoom       |
 
 ## Build and run
 
@@ -63,6 +70,11 @@ Windows does not allow installers to set this.
 
 The MSI version is taken from `Cargo.toml` (via the exe's version info).
 
+## Releasing
+
+Bump `version` in `Cargo.toml`, push, then publish a GitHub release with tag `vX.Y.Z`.
+The [Release MSI](.github/workflows/release.yml) workflow builds the MSI and attaches it to the release.
+
 ## Icon
 
 `assets/icon.ico` is embedded into the exe by `build.rs`; `assets/icon.png` is the window icon.
@@ -81,3 +93,4 @@ The encoding used for saving can be changed in the **Encoding** menu. If the tex
 ## Limitations
 
 - UTF-16 without BOM is only detected for mostly Latin-script text.
+- Large files use a lot of memory: egui lays out the whole text (a 5.6 MB file needs about 1.3 GB RAM).
