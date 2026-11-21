@@ -142,7 +142,12 @@ impl Notepad {
         if !self.confirm_discard() {
             return;
         }
-        let Some(path) = FileDialog::new().pick_file() else { return };
+        if let Some(path) = FileDialog::new().pick_file() {
+            self.load(path);
+        }
+    }
+
+    fn load(&mut self, path: PathBuf) {
         match std::fs::read(&path) {
             Ok(bytes) => {
                 let (text, enc) = Enc::decode(&bytes);
@@ -353,11 +358,12 @@ impl eframe::App for Notepad {
 }
 
 fn main() -> eframe::Result {
-    eframe::run_native(
-        "Notepad",
-        eframe::NativeOptions::default(),
-        Box::new(|_| Ok(Box::<Notepad>::default())),
-    )
+    // "Open with" / drag onto the .exe passes the file path as first argument.
+    let mut app = Notepad::default();
+    if let Some(path) = std::env::args_os().nth(1) {
+        app.load(path.into());
+    }
+    eframe::run_native("Notepad", eframe::NativeOptions::default(), Box::new(|_| Ok(Box::new(app))))
 }
 
 #[cfg(test)]
