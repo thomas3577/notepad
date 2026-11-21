@@ -37,7 +37,7 @@
         <!-- ProgID: name in "New" menu, icon, open command -->
         <RegistryKey Root="HKCU" Key="Software\Classes\RustNotepad.txt" ForceDeleteOnUninstall="yes">
           <RegistryValue Type="string" Value="Textdokument" />
-          <RegistryValue Key="DefaultIcon" Type="expandable" Value="%SystemRoot%\System32\imageres.dll,-102" />
+          <RegistryValue Key="DefaultIcon" Type="string" Value="&quot;[#NotepadExe]&quot;,0" />
           <RegistryValue Key="shell\open\command" Type="string" Value="&quot;[#NotepadExe]&quot; &quot;%1&quot;" />
         </RegistryKey>
 
