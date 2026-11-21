@@ -38,17 +38,27 @@ Tests:
 cargo test
 ```
 
-## Als Editor für .txt registrieren (Windows)
+## Installer (Windows, .msi)
+
+Das MSI installiert nur für den aktuellen Benutzer, ohne Admin-Rechte:
+
+- `%LOCALAPPDATA%\Programs\Notepad\notepad.exe`
+- Startmenü-Eintrag
+- `.txt`-Zuordnung, „Neu → Textdokument“, Eintrag unter „Öffnen mit“
+
+Deinstallation über „Apps & Features“ entfernt alles wieder.
+
+Bauen (benötigt [WiX Toolset](https://wixtoolset.org) 7: `dotnet tool install --global wix`):
 
 ```powershell
-cargo install --path .     # installiert nach %USERPROFILE%\.cargo\bin\notepad.exe
-.\register.ps1             # .txt-Zuordnung, "Neu > Textdokument", "Öffnen mit"
-.\register.ps1 -Uninstall  # wieder entfernen
+cargo build -r
+wix build wix\main.wxs -o target\notepad.msi
 ```
 
-Nur für den aktuellen Benutzer, keine Admin-Rechte nötig. Als Standard-App muss
-der Notepad einmalig per „Öffnen mit → Andere App auswählen → Immer“ gewählt werden,
-das lässt Windows nicht per Skript zu.
+Als Standard-App muss der Notepad einmalig per „Öffnen mit → Andere App auswählen → Immer“
+gewählt werden. Das lässt Windows auch Installern nicht zu.
+
+Die Version steht in `wix\main.wxs` (`Version="…"`) und wird nicht aus `Cargo.toml` übernommen.
 
 ## Kodierung beim Öffnen
 

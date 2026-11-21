@@ -1,0 +1,53 @@
+<!--
+  Per-user installer (no admin): installs to %LOCALAPPDATA%\Programs\Notepad,
+  registers .txt (open, "New > Textdokument", "Open with") and a Start menu entry.
+  Build: cargo build -r; wix build wix\main.wxs -o target\notepad.msi
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Notepad" Manufacturer="thomas3577" Version="0.1.0" Scope="perUser"
+           UpgradeCode="7d3f2a51-6c0e-4b8e-9a1d-2f5c8e4b9a70">
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="Eine neuere Version ist bereits installiert." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Notepad" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Main">
+      <Component Directory="INSTALLFOLDER" Guid="b2e9c4d7-3a18-4f6b-8c5e-91d0a7f3e264">
+        <File Id="NotepadExe" Source="$(sys.SOURCEFILEDIR)..\target\release\notepad.exe" KeyPath="no" />
+        <!-- per-user components need a HKCU key path and RemoveFolder entries -->
+        <RegistryKey Root="HKCU" Key="Software\RustNotepad" ForceDeleteOnUninstall="yes">
+          <RegistryValue Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+        </RegistryKey>
+        <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+        <RemoveFolder Id="RemoveProgramsDir" Directory="ProgramsDir" On="uninstall" />
+
+        <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Notepad"
+                  Target="[#NotepadExe]" WorkingDirectory="INSTALLFOLDER" />
+
+        <!-- ProgID: name in "New" menu, icon, open command -->
+        <RegistryKey Root="HKCU" Key="Software\Classes\RustNotepad.txt" ForceDeleteOnUninstall="yes">
+          <RegistryValue Type="string" Value="Textdokument" />
+          <RegistryValue Key="DefaultIcon" Type="expandable" Value="%SystemRoot%\System32\imageres.dll,-102" />
+          <RegistryValue Key="shell\open\command" Type="string" Value="&quot;[#NotepadExe]&quot; &quot;%1&quot;" />
+        </RegistryKey>
+
+        <!-- .txt -> ProgID; only our values are removed on uninstall -->
+        <RegistryKey Root="HKCU" Key="Software\Classes\.txt">
+          <RegistryValue Type="string" Value="RustNotepad.txt" />
+          <RegistryValue Name="Content Type" Type="string" Value="text/plain" />
+          <RegistryValue Name="PerceivedType" Type="string" Value="text" />
+          <RegistryValue Key="OpenWithProgids" Name="RustNotepad.txt" Type="string" Value="" />
+        </RegistryKey>
+        <RegistryKey Root="HKCU" Key="Software\Classes\.txt\ShellNew" ForceDeleteOnUninstall="yes">
+          <RegistryValue Name="NullFile" Type="string" Value="" />
+        </RegistryKey>
+      </Component>
+    </Feature>
+  </Package>
+</Wix>
