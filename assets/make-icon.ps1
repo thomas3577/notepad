@@ -1,4 +1,6 @@
-param([string]$OutDir)
+#Requires -Version 7
+# Generates icon.ico (16-256 px) and icon.png (256 px), plus icon-16/32.png previews.
+param([Parameter(Mandatory)][string]$OutDir)
 Add-Type -AssemblyName System.Drawing
 $ErrorActionPreference = 'Stop'
 

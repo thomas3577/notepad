@@ -15,7 +15,9 @@ A simple text editor written in Rust, built with [egui/eframe](https://github.co
 - Encodings: UTF-8, UTF-8 with BOM, UTF-16 LE/BE, ANSI (Windows-1252)
 - Line endings: CRLF and LF are detected and kept on save
 - Warning before discarding unsaved changes
-- Opens files via Explorer "Open with", the command line, or drag & drop onto the window or the exe
+- Opens files via Explorer "Open with", the command line, or drag & drop onto the window or the exe;
+  a file name that does not exist yet starts a new document saved under that name
+- Warns when a file contains invalid bytes for its encoding, and before opening very large files
 
 ## Keyboard shortcuts
 
@@ -54,7 +56,8 @@ The MSI installs for the current user only, no admin rights needed:
 
 - `%LOCALAPPDATA%\Programs\Notepad\notepad.exe`
 - Start menu entry
-- `.txt` association, "New > Text Document", "Open with" entry
+- `.txt` association and "New > Text Document" (only if no other per-user `.txt` association exists)
+- "Open with" entry
 
 Uninstalling via Settings > Apps removes everything again.
 
@@ -94,3 +97,4 @@ The encoding used for saving can be changed in the **Encoding** menu. If the tex
 
 - UTF-16 without BOM is only detected for mostly Latin-script text.
 - Large files use a lot of memory: egui lays out the whole text (a 5.6 MB file needs about 1.3 GB RAM).
+  Notepad asks before opening files over 10 MB, and limits undo history for large files.

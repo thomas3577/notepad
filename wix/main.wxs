@@ -41,17 +41,25 @@
           <RegistryValue Key="shell\open\command" Type="string" Value="&quot;[#NotepadExe]&quot; &quot;%1&quot;" />
         </RegistryKey>
 
-        <!-- .txt -> ProgID; only our values are removed on uninstall -->
+        <!-- "Open with" entry: only our own value, removed again on uninstall -->
+        <RegistryValue Root="HKCU" Key="Software\Classes\.txt\OpenWithProgids" Name="RustNotepad.txt" Type="string" Value="" />
+      </Component>
+
+      <!-- .txt -> our ProgID and "New > Text Document". Only if no other per-user .txt
+           association exists, so we never overwrite (and on uninstall delete) someone else's. -->
+      <Component Directory="INSTALLFOLDER" Guid="5c1f8e2a-9d47-4b3e-a6c0-7e2d91b4f853"
+                 Condition="NOT TXT_PROGID OR TXT_PROGID = &quot;RustNotepad.txt&quot;">
         <RegistryKey Root="HKCU" Key="Software\Classes\.txt">
-          <RegistryValue Type="string" Value="RustNotepad.txt" />
+          <RegistryValue Type="string" Value="RustNotepad.txt" KeyPath="yes" />
           <RegistryValue Name="Content Type" Type="string" Value="text/plain" />
           <RegistryValue Name="PerceivedType" Type="string" Value="text" />
-          <RegistryValue Key="OpenWithProgids" Name="RustNotepad.txt" Type="string" Value="" />
-        </RegistryKey>
-        <RegistryKey Root="HKCU" Key="Software\Classes\.txt\ShellNew" ForceDeleteOnUninstall="yes">
-          <RegistryValue Name="NullFile" Type="string" Value="" />
+          <RegistryValue Key="ShellNew" Name="NullFile" Type="string" Value="" />
         </RegistryKey>
       </Component>
     </Feature>
+
+    <Property Id="TXT_PROGID">
+      <RegistrySearch Root="HKCU" Key="Software\Classes\.txt" Type="raw" />
+    </Property>
   </Package>
 </Wix>
