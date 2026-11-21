@@ -13,13 +13,13 @@ Ein simpler Texteditor in Rust, gebaut mit [egui/eframe](https://github.com/emil
 
 ## Tastenkürzel
 
-| Kürzel         | Aktion            |
-|----------------|-------------------|
-| Ctrl+N         | Neu               |
-| Ctrl+O         | Öffnen            |
-| Ctrl+S         | Speichern         |
-| Ctrl+F, Ctrl+H | Suchen/Ersetzen   |
-| F3             | Weitersuchen      |
+| Kürzel         | Aktion               |
+|----------------|----------------------|
+| Ctrl+N         | Neu                  |
+| Ctrl+O         | Öffnen               |
+| Ctrl+S         | Speichern            |
+| Ctrl+F, Ctrl+H | Suchen/Ersetzen      |
+| F3             | Weitersuchen         |
 | Esc            | Suchleiste schließen |
 
 ## Bauen und starten
@@ -37,6 +37,18 @@ Tests:
 ```sh
 cargo test
 ```
+
+## Als Editor für .txt registrieren (Windows)
+
+```powershell
+cargo install --path .     # installiert nach %USERPROFILE%\.cargo\bin\notepad.exe
+.\register.ps1             # .txt-Zuordnung, "Neu > Textdokument", "Öffnen mit"
+.\register.ps1 -Uninstall  # wieder entfernen
+```
+
+Nur für den aktuellen Benutzer, keine Admin-Rechte nötig. Als Standard-App muss
+der Notepad einmalig per „Öffnen mit → Andere App auswählen → Immer“ gewählt werden,
+das lässt Windows nicht per Skript zu.
 
 ## Kodierung beim Öffnen
 
