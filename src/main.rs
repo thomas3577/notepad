@@ -273,6 +273,11 @@ struct Notepad {
     scroll_to: Option<usize>,
     no_wrap: bool,
     last_title: String,
+    /// Menu bar is hidden by default; Alt or View > Show Menu Bar shows it, ☰ always works.
+    show_menu: bool,
+    alt_held: bool,
+    /// Alt went down and nothing else happened yet (so Alt+F4, Alt+Tab don't toggle the menu).
+    alt_alone: bool,
     /// Text zoom factor, 1.0 = 100 %.
     zoom: f32,
     /// New document: clear egui's editor state (undo history, cursor) and scroll position.
@@ -433,6 +438,42 @@ impl Notepad {
         }
     }
 
+    /// File/Edit/View/Encoding menus, used by the menu bar and the ☰ popup.
+    fn menus(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, p: Parent) {
+        ui.menu_button("File", |ui| {
+            if ui.button("New (Ctrl+N)").clicked() { self.new_file(p); }
+            if ui.button("Open… (Ctrl+O)").clicked() { self.open(p); }
+            if ui.button("Save (Ctrl+S)").clicked() { self.save(false, p); }
+            if ui.button("Save As… (Ctrl+Shift+S)").clicked() { self.save(true, p); }
+        });
+        ui.menu_button("Edit", |ui| {
+            if ui.button("Find/Replace (Ctrl+F)").clicked() {
+                (self.find_open, self.find_focus) = (true, true);
+            }
+            if ui.button("Find Next (F3)").clicked() { self.find_next(ctx); }
+        });
+        ui.menu_button("View", |ui| {
+            ui.checkbox(&mut self.show_menu, "Show Menu Bar (Alt)");
+            let mut wrap = !self.no_wrap;
+            if ui.checkbox(&mut wrap, "Word Wrap").changed() { self.no_wrap = !wrap; }
+            ui.separator();
+            if ui.button("Zoom In (Ctrl+Plus)").clicked() { self.zoom += 0.1; }
+            if ui.button("Zoom Out (Ctrl+Minus)").clicked() { self.zoom -= 0.1; }
+            if ui.button("Reset Zoom (Ctrl+0)").clicked() { self.zoom = 1.0; }
+        });
+        ui.menu_button("Encoding", |ui| {
+            for e in Enc::ALL {
+                if ui.radio_value(&mut self.enc, e, e.name()).changed() { self.dirty = true; }
+            }
+            ui.separator();
+            if ui.radio_value(&mut self.crlf, true, "Windows (CRLF)").changed()
+                | ui.radio_value(&mut self.crlf, false, "Unix (LF)").changed()
+            {
+                self.dirty = true;
+            }
+        });
+    }
+
     fn title(&self) -> String {
         let name = self.path.as_ref().and_then(|p| p.file_name()).map_or("Untitled".into(), |n| n.to_string_lossy());
         format!("{}{name} - Notepad", if self.dirty { "*" } else { "" })
@@ -448,7 +489,8 @@ impl eframe::App for Notepad {
             self.load(path, p);
         }
 
-        let find_open = self.find_open;
+        // Esc closes the find bar, else the menu bar; otherwise menus and popups need it
+        let esc_ours = self.find_open || self.show_menu;
         let [save_as, n, o, s, f, h, f3, esc, plus, equals, minus, zero] = ctx.input_mut(|i| {
             use egui::{Key, KeyboardShortcut as K, Modifiers as M};
             [
@@ -460,8 +502,7 @@ impl eframe::App for Notepad {
                 K::new(M::COMMAND, Key::F),
                 K::new(M::COMMAND, Key::H),
                 K::new(M::NONE, Key::F3),
-                // Esc only belongs to the find bar while it is open; otherwise menus need it
-                if find_open { K::new(M::NONE, Key::Escape) } else { K::new(M::NONE, Key::F24) },
+                if esc_ours { K::new(M::NONE, Key::Escape) } else { K::new(M::NONE, Key::F24) },
                 K::new(M::COMMAND, Key::Plus),
                 K::new(M::COMMAND, Key::Equals),
                 K::new(M::COMMAND, Key::Minus),
@@ -475,10 +516,37 @@ impl eframe::App for Notepad {
         if s { self.save(false, p); }
         if f || h { (self.find_open, self.find_focus) = (true, true); }
         if f3 { self.find_next(&ctx); }
-        if esc && find_open {
+        if esc && self.find_open {
             self.find_open = false;
             ctx.memory_mut(|m| m.request_focus(editor_id()));
+        } else if esc {
+            self.show_menu = false;
         }
+
+        // Alt pressed and released on its own toggles the menu bar (like Windows Explorer).
+        // AltGr (German @ € { } [ ] \ |) arrives as Ctrl+Alt and must not count.
+        let (alt, other_input, focused) = ctx.input(|i| {
+            let other = i.modifiers.ctrl
+                || i.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Key { pressed: true, .. }
+                            | egui::Event::Text(_)
+                            | egui::Event::PointerButton { pressed: true, .. }
+                    )
+                });
+            (i.modifiers.alt, other, i.focused)
+        });
+        if alt && !self.alt_held {
+            self.alt_alone = true;
+        }
+        if other_input || !focused {
+            self.alt_alone = false;
+        }
+        if !alt && self.alt_held && self.alt_alone {
+            self.show_menu = !self.show_menu;
+        }
+        self.alt_held = alt;
         if plus || equals { self.zoom += 0.1; }
         if minus { self.zoom -= 0.1; }
         if zero { self.zoom = 1.0; }
@@ -496,41 +564,11 @@ impl eframe::App for Notepad {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
 
-        egui::Panel::top("menu").show(ui, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("New (Ctrl+N)").clicked() { self.new_file(p); }
-                    if ui.button("Open… (Ctrl+O)").clicked() { self.open(p); }
-                    if ui.button("Save (Ctrl+S)").clicked() { self.save(false, p); }
-                    if ui.button("Save As… (Ctrl+Shift+S)").clicked() { self.save(true, p); }
-                });
-                ui.menu_button("Edit", |ui| {
-                    if ui.button("Find/Replace (Ctrl+F)").clicked() {
-                        (self.find_open, self.find_focus) = (true, true);
-                    }
-                    if ui.button("Find Next (F3)").clicked() { self.find_next(&ctx); }
-                });
-                ui.menu_button("View", |ui| {
-                    let mut wrap = !self.no_wrap;
-                    if ui.checkbox(&mut wrap, "Word Wrap").changed() { self.no_wrap = !wrap; }
-                    ui.separator();
-                    if ui.button("Zoom In (Ctrl+Plus)").clicked() { self.zoom += 0.1; }
-                    if ui.button("Zoom Out (Ctrl+Minus)").clicked() { self.zoom -= 0.1; }
-                    if ui.button("Reset Zoom (Ctrl+0)").clicked() { self.zoom = 1.0; }
-                });
-                ui.menu_button("Encoding", |ui| {
-                    for e in Enc::ALL {
-                        if ui.radio_value(&mut self.enc, e, e.name()).changed() { self.dirty = true; }
-                    }
-                    ui.separator();
-                    if ui.radio_value(&mut self.crlf, true, "Windows (CRLF)").changed()
-                        | ui.radio_value(&mut self.crlf, false, "Unix (LF)").changed()
-                    {
-                        self.dirty = true;
-                    }
-                });
+        if self.show_menu {
+            egui::Panel::top("menu").show(ui, |ui| {
+                egui::MenuBar::new().ui(ui, |ui| self.menus(ui, &ctx, p));
             });
-        });
+        }
 
         if self.find_open {
             egui::Panel::top("find").show(ui, |ui| {
@@ -561,6 +599,8 @@ impl eframe::App for Notepad {
                 .map_or(0, |r| r.primary.index.into());
             let (ln, col) = line_col(&self.text, cursor);
             ui.horizontal(|ui| {
+                // Same menus as the menu bar, as a popup with submenus.
+                ui.menu_button("☰", |ui| self.menus(ui, &ctx, p)).response.on_hover_text("Menu (Alt)");
                 ui.label(format!(
                     "Ln {ln}, Col {col}  |  {:.0}%  |  {}  |  {}",
                     self.zoom * 100.0,

@@ -6,6 +6,7 @@ A simple text editor written in Rust, built with [egui/eframe](https://github.co
 
 ## Features
 
+- Minimal UI: the menu bar is hidden; press Alt to show it, or use the ☰ button in the status bar
 - New, Open, Save, Save As; saving is crash-safe (temp file + rename)
 - Line numbers (correct with word wrap)
 - Word wrap on/off (View menu)
@@ -33,6 +34,7 @@ A simple text editor written in Rust, built with [egui/eframe](https://github.co
 | Ctrl+Plus      | Zoom in          |
 | Ctrl+Minus     | Zoom out         |
 | Ctrl+0         | Reset zoom       |
+| Alt            | Show/hide menu   |
 
 ## Build and run
 
