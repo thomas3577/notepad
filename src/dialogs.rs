@@ -31,3 +31,12 @@ pub fn warn(p: Parent, msg: String) {
 pub fn ask(p: Parent, msg: &str) -> bool {
     message(p).set_description(msg).set_buttons(MessageButtons::YesNo).show() == MessageDialogResult::Yes
 }
+
+/// Some(true) = Yes, Some(false) = No, None = Cancel (or dialog closed).
+pub fn ask_yes_no_cancel(p: Parent, msg: &str) -> Option<bool> {
+    match message(p).set_description(msg).set_buttons(MessageButtons::YesNoCancel).show() {
+        MessageDialogResult::Yes => Some(true),
+        MessageDialogResult::No => Some(false),
+        _ => None,
+    }
+}

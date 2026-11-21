@@ -1,44 +1,31 @@
-//! The Notepad window: document state, menus, find bar, editor, status bar.
+//! The Notepad window: tabs, menus, find bar, editor, status bar.
 
 use crate::alt_tap::AltTap;
-use crate::dialogs::{Parent, ask, error, file_dialog, warn};
+use crate::dialogs::{Parent, ask, ask_yes_no_cancel, file_dialog};
+use crate::doc::Doc;
 use crate::encoding::Enc;
-use crate::files::write_atomic;
 use crate::text::{char_to_byte, find, line_col, replace_all};
 use eframe::egui;
 use egui::text::{CCursor, CCursorRange};
-use std::borrow::Cow;
 use std::path::PathBuf;
 
-/// egui keeps far more memory per character than the file needs (layout data for every glyph).
-/// Measured: a 5.6 MB file needs about 1.3 GB.
-const MEMORY_PER_TEXT_BYTE: u64 = 240;
-/// Ask before opening files whose estimated memory use exceeds this.
-const LARGE_FILE_BYTES: u64 = 10 * 1024 * 1024;
 /// Upper bound for egui's undo history, which stores a full copy of the text per step.
 const UNDO_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 
-/// Line ending for new documents: CRLF on Windows, like Windows Notepad.
-const NEW_DOC_CRLF: bool = cfg!(windows);
-
-fn editor_id() -> egui::Id {
-    egui::Id::unique("editor")
-}
-
 #[derive(Default)]
 pub struct Notepad {
-    text: String,
-    path: Option<PathBuf>,
-    dirty: bool,
-    enc: Enc,
-    crlf: bool,
+    /// Open tabs; never empty.
+    docs: Vec<Doc>,
+    active: usize,
+    next_id: u64,
+    /// Tab whose editor got keyboard focus last; switching tabs moves focus to the new one.
+    focused_doc: Option<u64>,
     find_open: bool,
     find_focus: bool,
     needle: String,
     match_case: bool,
     replacement: String,
     not_found: bool,
-    scroll_to: Option<usize>,
     no_wrap: bool,
     last_title: String,
     /// Menu bar is hidden by default; Alt or View > Show Menu Bar shows it, ☰ always works.
@@ -46,123 +33,90 @@ pub struct Notepad {
     alt_tap: AltTap,
     /// Text zoom factor, 1.0 = 100 %.
     zoom: f32,
-    /// New document: clear egui's editor state (undo history, cursor) and scroll position.
-    reset_editor: bool,
-    /// File from the command line, opened on the first frame so dialogs have a parent window.
-    pending_open: Option<PathBuf>,
+    /// Files from the command line, opened on the first frame so dialogs have a parent window.
+    pending_open: Vec<PathBuf>,
 }
 
 impl Notepad {
-    /// Empty document; `open` (e.g. from the command line) is loaded on the first frame.
-    pub fn new(open: Option<PathBuf>) -> Self {
-        Self { zoom: 1.0, crlf: NEW_DOC_CRLF, reset_editor: true, pending_open: open, ..Default::default() }
+    /// One empty tab; `open` (e.g. from the command line) is loaded on the first frame.
+    pub fn new(open: Vec<PathBuf>) -> Self {
+        Notepad { docs: vec![Doc::new(0, None)], next_id: 1, zoom: 1.0, pending_open: open, ..Default::default() }
     }
 
-    /// true = ok to throw away current text
-    fn confirm_discard(&self, p: Parent) -> bool {
-        !self.dirty || ask(p, "Discard unsaved changes?")
+    fn doc(&self) -> &Doc {
+        &self.docs[self.active]
     }
 
-    fn set_document(&mut self, text: String, path: Option<PathBuf>, enc: Enc, crlf: bool) {
-        (self.text, self.path, self.enc, self.crlf) = (text, path, enc, crlf);
-        (self.dirty, self.not_found, self.scroll_to, self.reset_editor) = (false, false, None, true);
+    fn doc_mut(&mut self) -> &mut Doc {
+        &mut self.docs[self.active]
     }
 
-    fn new_file(&mut self, p: Parent) {
-        if self.confirm_discard(p) {
-            self.set_document(String::new(), None, Enc::default(), NEW_DOC_CRLF);
+    fn take_id(&mut self) -> u64 {
+        self.next_id += 1;
+        self.next_id - 1
+    }
+
+    fn new_tab(&mut self) {
+        let id = self.take_id();
+        self.docs.push(Doc::new(id, None));
+        self.active = self.docs.len() - 1;
+    }
+
+    /// Open in a new tab; switches to the tab if the file is already open, and reuses
+    /// an empty Untitled tab.
+    fn open_path(&mut self, path: PathBuf, p: Parent) {
+        if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
+            self.active = i;
+            return;
+        }
+        let id = self.take_id();
+        if let Some(doc) = Doc::load(id, path, p) {
+            if self.doc().is_blank() {
+                *self.doc_mut() = doc;
+            } else {
+                self.docs.push(doc);
+                self.active = self.docs.len() - 1;
+            }
         }
     }
 
     fn open(&mut self, p: Parent) {
-        if !self.confirm_discard(p) {
-            return;
+        for path in file_dialog(p).pick_files().unwrap_or_default() {
+            self.open_path(path, p);
         }
-        if let Some(path) = file_dialog(p).pick_file() {
-            self.load(path, p);
-        }
-    }
-
-    fn load(&mut self, path: PathBuf, p: Parent) {
-        let meta = match std::fs::metadata(&path) {
-            Ok(m) => m,
-            // Like Windows Notepad: a new document that will be saved under this name.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return self.set_document(String::new(), Some(path), Enc::default(), NEW_DOC_CRLF);
-            }
-            Err(e) => return error(p, format!("Could not open file: {e}")),
-        };
-        // Devices (CON), pipes and folders would hang or fail on read.
-        if !meta.is_file() {
-            return error(p, format!("Not a regular file: {}", path.display()));
-        }
-        if meta.len() > LARGE_FILE_BYTES {
-            let mb = meta.len() as f64 / 1_048_576.0;
-            let gb = (meta.len() * MEMORY_PER_TEXT_BYTE) as f64 / 1_073_741_824.0;
-            if !ask(p, &format!("This file is {mb:.0} MB. Opening it will use about {gb:.1} GB of memory.\nOpen anyway?")) {
-                return;
-            }
-        }
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(e) => return error(p, format!("Could not open file: {e}")),
-        };
-        let (text, enc, lossy) = Enc::decode(&bytes);
-        drop(bytes);
-        if lossy {
-            warn(p, format!(
-                "This file contains bytes that are not valid {}.\nThey are shown as \u{FFFD} and will be replaced if you save the file.",
-                enc.name()
-            ));
-        }
-        // no line break at all: use the platform default, so the first Enter matches it
-        let crlf = if text.contains('\n') { text.contains("\r\n") } else { NEW_DOC_CRLF };
-        let text = if crlf { text.replace("\r\n", "\n") } else { text };
-        self.set_document(text, Some(path), enc, crlf);
     }
 
     fn save(&mut self, save_as: bool, p: Parent) {
-        let path = match (&self.path, save_as) {
-            (Some(path), false) => path.clone(),
-            _ => {
-                let mut d = file_dialog(p);
-                d = match &self.path {
-                    Some(cur) => {
-                        let d = d.set_file_name(cur.file_name().unwrap_or_default().to_string_lossy());
-                        match cur.parent() {
-                            Some(dir) => d.set_directory(dir),
-                            None => d,
-                        }
-                    }
-                    None => d.set_file_name("untitled.txt"),
-                };
-                match d.save_file() {
-                    Some(path) => path,
-                    None => return,
-                }
+        self.doc_mut().save(save_as, p);
+    }
+
+    /// Asks to save a changed tab first; the last tab is replaced by an empty one.
+    fn close_tab(&mut self, i: usize, ctx: &egui::Context, p: Parent) {
+        let d = &mut self.docs[i];
+        if d.dirty {
+            match ask_yes_no_cancel(p, &format!("Save changes to {}?", d.name())) {
+                Some(true) if d.save(false, p) => {}
+                Some(false) => {}
+                _ => return,
             }
-        };
-        let text: Cow<str> = if self.crlf { self.text.replace('\n', "\r\n").into() } else { (&self.text).into() };
-        let (bytes, enc) = match self.enc.encode(&text) {
-            Some(b) => (b, self.enc),
-            None if ask(p, &format!(
-                "The text contains characters that cannot be represented in {}.\nSave as UTF-8 instead?",
-                self.enc.name()
-            )) =>
-            {
-                (Cow::Borrowed(text.as_bytes()), Enc::Utf8)
-            }
-            None => return,
-        };
-        match write_atomic(&path, &bytes) {
-            // only now: a failed save must not silently change the encoding
-            Ok(()) => (self.path, self.dirty, self.enc) = (Some(path), false, enc),
-            Err(e) => error(p, format!("Could not save file: {e}")),
+        }
+        // drop egui's state for this editor (its undo history holds copies of the text)
+        let id = self.docs.remove(i).editor_id();
+        ctx.data_mut(|data| data.remove::<egui::text_edit::TextEditState>(id));
+        if self.docs.is_empty() {
+            self.new_tab();
+        } else if self.active > i || self.active == self.docs.len() {
+            self.active -= 1;
         }
     }
 
-    fn selection(ctx: &egui::Context) -> Option<(usize, usize)> {
-        let r = egui::TextEdit::load_state(ctx, editor_id())?.cursor.char_range()?;
+    fn next_tab(&mut self, step: isize) {
+        let n = self.docs.len() as isize;
+        self.active = (self.active as isize + step).rem_euclid(n) as usize;
+    }
+
+    fn selection(&self, ctx: &egui::Context) -> Option<(usize, usize)> {
+        let r = egui::TextEdit::load_state(ctx, self.doc().editor_id())?.cursor.char_range()?;
         let (a, b) = (r.primary.index, r.secondary.index);
         Some((a.min(b).into(), a.max(b).into()))
     }
@@ -170,10 +124,11 @@ impl Notepad {
     /// Select a range without moving keyboard focus (the find bar keeps it, so a second
     /// Enter searches again instead of overwriting the match).
     fn select(&mut self, ctx: &egui::Context, a: usize, b: usize) {
-        let mut s = egui::TextEdit::load_state(ctx, editor_id()).unwrap_or_default();
+        let id = self.doc().editor_id();
+        let mut s = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
         s.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(a), CCursor::new(b))));
-        s.store(ctx, editor_id());
-        self.scroll_to = Some(a);
+        s.store(ctx, id);
+        self.doc_mut().scroll_to = Some(a);
     }
 
     fn find_next(&mut self, ctx: &egui::Context) {
@@ -181,8 +136,8 @@ impl Notepad {
             (self.find_open, self.find_focus) = (true, true);
             return;
         }
-        let from = Self::selection(ctx).map_or(0, |(_, b)| b);
-        let hit = find(&self.text, &self.needle, from, self.match_case);
+        let from = self.selection(ctx).map_or(0, |(_, b)| b);
+        let hit = find(&self.doc().text, &self.needle, from, self.match_case);
         self.not_found = hit.is_none();
         if let Some((a, b)) = hit {
             self.select(ctx, a, b);
@@ -190,12 +145,14 @@ impl Notepad {
     }
 
     fn replace(&mut self, ctx: &egui::Context) {
-        if let Some((a, b)) = Self::selection(ctx) {
-            let (ba, bb) = (char_to_byte(&self.text, a), char_to_byte(&self.text, b));
-            if a != b && find(&self.text[ba..bb], &self.needle, 0, self.match_case) == Some((0, b - a)) {
-                self.text.replace_range(ba..bb, &self.replacement);
-                self.dirty = true;
-                let end = a + self.replacement.chars().count();
+        if let Some((a, b)) = self.selection(ctx) {
+            let (needle, replacement, match_case) = (self.needle.clone(), self.replacement.clone(), self.match_case);
+            let d = self.doc_mut();
+            let (ba, bb) = (char_to_byte(&d.text, a), char_to_byte(&d.text, b));
+            if a != b && find(&d.text[ba..bb], &needle, 0, match_case) == Some((0, b - a)) {
+                d.text.replace_range(ba..bb, &replacement);
+                d.dirty = true;
+                let end = a + replacement.chars().count();
                 self.select(ctx, end, end);
             }
         }
@@ -203,8 +160,9 @@ impl Notepad {
     }
 
     fn replace_all(&mut self) {
-        match replace_all(&self.text, &self.needle, &self.replacement, self.match_case) {
-            Some(t) => (self.text, self.dirty, self.not_found) = (t, true, false),
+        let d = &mut self.docs[self.active];
+        match replace_all(&d.text, &self.needle, &self.replacement, self.match_case) {
+            Some(t) => (d.text, d.dirty, self.not_found) = (t, true, false),
             None => self.not_found = true,
         }
     }
@@ -212,10 +170,12 @@ impl Notepad {
     /// File/Edit/View/Encoding menus, used by the menu bar and the ☰ popup.
     fn menus(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, p: Parent) {
         ui.menu_button("File", |ui| {
-            if ui.button("New (Ctrl+N)").clicked() { self.new_file(p); }
+            if ui.button("New Tab (Ctrl+N)").clicked() { self.new_tab(); }
             if ui.button("Open… (Ctrl+O)").clicked() { self.open(p); }
             if ui.button("Save (Ctrl+S)").clicked() { self.save(false, p); }
             if ui.button("Save As… (Ctrl+Shift+S)").clicked() { self.save(true, p); }
+            ui.separator();
+            if ui.button("Close Tab (Ctrl+W)").clicked() { self.close_tab(self.active, ctx, p); }
         });
         ui.menu_button("Edit", |ui| {
             if ui.button("Find/Replace (Ctrl+F)").clicked() {
@@ -233,21 +193,44 @@ impl Notepad {
             if ui.button("Reset Zoom (Ctrl+0)").clicked() { self.zoom = 1.0; }
         });
         ui.menu_button("Encoding", |ui| {
+            let d = self.doc_mut();
             for e in Enc::ALL {
-                if ui.radio_value(&mut self.enc, e, e.name()).changed() { self.dirty = true; }
+                if ui.radio_value(&mut d.enc, e, e.name()).changed() { d.dirty = true; }
             }
             ui.separator();
-            if ui.radio_value(&mut self.crlf, true, "Windows (CRLF)").changed()
-                | ui.radio_value(&mut self.crlf, false, "Unix (LF)").changed()
+            if ui.radio_value(&mut d.crlf, true, "Windows (CRLF)").changed()
+                | ui.radio_value(&mut d.crlf, false, "Unix (LF)").changed()
             {
-                self.dirty = true;
+                d.dirty = true;
             }
         });
     }
 
+    fn tab_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, p: Parent) {
+        let (mut switch_to, mut close, mut add) = (None, None, false);
+        egui::ScrollArea::horizontal().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for (i, d) in self.docs.iter().enumerate() {
+                    let label = format!("{}{}", if d.dirty { "*" } else { "" }, d.name());
+                    let hover = d.path.as_ref().map_or("Untitled".into(), |p| p.display().to_string());
+                    let r = ui.selectable_label(i == self.active, label).on_hover_text(hover);
+                    if r.clicked() { switch_to = Some(i); }
+                    if r.middle_clicked() { close = Some(i); }
+                    // × (U+00D7): egui's default fonts have no ✕
+                    if ui.small_button("×").on_hover_text("Close Tab (Ctrl+W)").clicked() { close = Some(i); }
+                    ui.separator();
+                }
+                if ui.button("+").on_hover_text("New Tab (Ctrl+N)").clicked() { add = true; }
+            });
+        });
+        if let Some(i) = switch_to { self.active = i; }
+        if let Some(i) = close { self.close_tab(i, ctx, p); }
+        if add { self.new_tab(); }
+    }
+
     fn title(&self) -> String {
-        let name = self.path.as_ref().and_then(|p| p.file_name()).map_or("Untitled".into(), |n| n.to_string_lossy());
-        format!("{}{name} - Notepad", if self.dirty { "*" } else { "" })
+        let d = self.doc();
+        format!("{}{} - Notepad", if d.dirty { "*" } else { "" }, d.name())
     }
 }
 
@@ -256,20 +239,24 @@ impl eframe::App for Notepad {
         let ctx = ui.ctx().clone();
         let p = Some(&*frame);
 
-        if let Some(path) = self.pending_open.take() {
-            self.load(path, p);
+        for path in std::mem::take(&mut self.pending_open) {
+            self.open_path(path, p);
         }
 
         // Esc closes the find bar, else the menu bar; otherwise menus and popups need it
         let esc_ours = self.find_open || self.show_menu;
-        let [save_as, n, o, s, f, h, f3, esc, plus, equals, minus, zero] = ctx.input_mut(|i| {
+        let [save_as, prev_tab, n, t, o, s, w, next_tab, f, h, f3, esc, plus, equals, minus, zero] = ctx.input_mut(|i| {
             use egui::{Key, KeyboardShortcut as K, Modifiers as M};
             [
-                // Ctrl+Shift+S first: egui's Ctrl+S would also match it (extra Shift is ignored)
+                // Shift variants first: egui's Ctrl+X would also match Ctrl+Shift+X
                 K::new(M::COMMAND | M::SHIFT, Key::S),
+                K::new(M::COMMAND | M::SHIFT, Key::Tab),
                 K::new(M::COMMAND, Key::N),
+                K::new(M::COMMAND, Key::T),
                 K::new(M::COMMAND, Key::O),
                 K::new(M::COMMAND, Key::S),
+                K::new(M::COMMAND, Key::W),
+                K::new(M::COMMAND, Key::Tab),
                 K::new(M::COMMAND, Key::F),
                 K::new(M::COMMAND, Key::H),
                 K::new(M::NONE, Key::F3),
@@ -282,14 +269,17 @@ impl eframe::App for Notepad {
             .map(|k| i.consume_shortcut(&k))
         });
         if save_as { self.save(true, p); }
-        if n { self.new_file(p); }
+        if n || t { self.new_tab(); }
         if o { self.open(p); }
         if s { self.save(false, p); }
+        if w { self.close_tab(self.active, &ctx, p); }
+        if next_tab { self.next_tab(1); }
+        if prev_tab { self.next_tab(-1); }
         if f || h { (self.find_open, self.find_focus) = (true, true); }
         if f3 { self.find_next(&ctx); }
         if esc && self.find_open {
             self.find_open = false;
-            ctx.memory_mut(|m| m.request_focus(editor_id()));
+            self.focused_doc = None; // give the editor its focus back
         } else if esc {
             self.show_menu = false;
         }
@@ -310,17 +300,21 @@ impl eframe::App for Notepad {
         if zero { self.zoom = 1.0; }
         self.zoom *= ctx.input(|i| i.zoom_delta()); // Ctrl + mouse wheel
 
-        // File dropped onto the window
-        if let Some(path) = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()))
-            && self.confirm_discard(p)
-        {
-            self.load(path, p);
+        // Files dropped onto the window
+        for path in ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect::<Vec<_>>()) {
+            self.open_path(path, p);
         }
 
         // Close guard
-        if ctx.input(|i| i.viewport().close_requested()) && !self.confirm_discard(p) {
+        let unsaved = self.docs.iter().filter(|d| d.dirty).count();
+        if ctx.input(|i| i.viewport().close_requested())
+            && unsaved > 0
+            && !ask(p, &format!("Discard unsaved changes in {unsaved} tab(s)?"))
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
+
+        egui::Panel::top("tabs").show(ui, |ui| self.tab_bar(ui, &ctx, p));
 
         if self.show_menu {
             egui::Panel::top("menu").show(ui, |ui| {
@@ -344,7 +338,11 @@ impl eframe::App for Notepad {
                     if ui.button("Replace").clicked() { self.replace(&ctx); }
                     if ui.button("Replace All").clicked() { self.replace_all(); }
                     if self.not_found { ui.colored_label(ui.visuals().warn_fg_color, "Not found"); }
-                    if ui.button("✕").clicked() { self.find_open = false; }
+                    // × (U+00D7): egui's default fonts have no ✕
+                    if ui.button("×").clicked() {
+                        self.find_open = false;
+                        self.focused_doc = None;
+                    }
                 });
             });
         }
@@ -352,10 +350,17 @@ impl eframe::App for Notepad {
         self.zoom = self.zoom.clamp(0.5, 4.0);
 
         egui::Panel::bottom("status").show(ui, |ui| {
-            let cursor = egui::TextEdit::load_state(&ctx, editor_id())
+            let cursor = egui::TextEdit::load_state(&ctx, self.doc().editor_id())
                 .and_then(|s| s.cursor.char_range())
                 .map_or(0, |r| r.primary.index.into());
-            let (ln, col) = line_col(&self.text, cursor);
+            let d = self.doc();
+            let (ln, col) = line_col(&d.text, cursor);
+            let status = format!(
+                "Ln {ln}, Col {col}  |  {:.0}%  |  {}  |  {}",
+                self.zoom * 100.0,
+                d.enc.name(),
+                if d.crlf { "CRLF" } else { "LF" }
+            );
             ui.horizontal(|ui| {
                 // Same menus as the menu bar, as a popup with submenus. The ☰ icon is painted:
                 // egui's default fonts don't contain the ☰ glyph.
@@ -370,61 +375,68 @@ impl eframe::App for Notepad {
                 }
                 let resp = resp.on_hover_text("Menu (Alt)");
                 egui::Popup::menu(&resp).show(|ui| self.menus(ui, &ctx, p));
-                ui.label(format!(
-                    "Ln {ln}, Col {col}  |  {:.0}%  |  {}  |  {}",
-                    self.zoom * 100.0,
-                    self.enc.name(),
-                    if self.crlf { "CRLF" } else { "LF" }
-                ));
+                ui.label(status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.weak(concat!("v", env!("CARGO_PKG_VERSION")));
                 });
             });
         });
 
-        // New document: fresh undo history (sized so large files don't keep ~100 full copies)
-        let reset = std::mem::take(&mut self.reset_editor);
+        let editor_id = self.doc().editor_id();
+
+        // New document in this tab: fresh undo history (sized so large files don't keep
+        // ~100 full copies of the text)
+        let reset = std::mem::take(&mut self.doc_mut().reset_editor);
         if reset {
-            let max_undos = (UNDO_BUDGET_BYTES / self.text.len().max(1)).clamp(2, 100);
+            let max_undos = (UNDO_BUDGET_BYTES / self.doc().text.len().max(1)).clamp(2, 100);
             let mut state = egui::text_edit::TextEditState::default();
+            // cursor at the start, like Windows Notepad (egui would put it at the end)
+            state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(0))));
             state.set_undoer(egui::util::undoer::Undoer::with_settings(egui::util::undoer::Settings {
                 max_undos,
                 ..Default::default()
             }));
-            state.store(&ctx, editor_id());
-            // ready to type right away, like Windows Notepad
-            ctx.memory_mut(|m| m.request_focus(editor_id()));
+            state.store(&ctx, editor_id);
+        }
+        // New or switched tab: ready to type right away, like Windows Notepad
+        if self.focused_doc != Some(self.doc().id) {
+            self.focused_doc = Some(self.doc().id);
+            ctx.memory_mut(|m| m.request_focus(editor_id));
         }
 
         // While the editor is not focused (e.g. typing in the find bar), egui hides the
         // selection, so we paint the selected range (the current match) ourselves.
-        let highlight = (!ctx.memory(|m| m.has_focus(editor_id())))
-            .then(|| Self::selection(&ctx))
+        let highlight = (!ctx.memory(|m| m.has_focus(editor_id)))
+            .then(|| self.selection(&ctx))
             .flatten()
             .filter(|(a, b)| a != b)
-            .map(|(a, b)| (char_to_byte(&self.text, a), char_to_byte(&self.text, b)));
+            .map(|(a, b)| (char_to_byte(&self.doc().text, a), char_to_byte(&self.doc().text, b)));
 
+        let (zoom, no_wrap) = (self.zoom, self.no_wrap);
+        let d = &mut self.docs[self.active];
         egui::CentralPanel::default().show(ui, |ui| {
-            let mut scroll = if self.no_wrap { egui::ScrollArea::both() } else { egui::ScrollArea::vertical() };
+            // per tab, so every tab keeps its own scroll position
+            let scroll = if no_wrap { egui::ScrollArea::both() } else { egui::ScrollArea::vertical() };
+            let mut scroll = scroll.id_salt(("scroll", d.id));
             if reset {
                 scroll = scroll.scroll_offset(egui::Vec2::ZERO);
             }
             scroll.show(ui, |ui| {
                 ui.horizontal_top(|ui| {
                     let mut font = egui::TextStyle::Monospace.resolve(ui.style());
-                    font.size *= self.zoom;
+                    font.size *= zoom;
                     let color = ui.visuals().weak_text_color();
-                    let lines = self.text.matches('\n').count() + 1;
+                    let lines = d.text.matches('\n').count() + 1;
                     let w = ui.painter().layout_no_wrap(lines.to_string(), font.clone(), color).size().x;
                     let (gutter, _) = ui.allocate_exact_size(egui::vec2(w + 8.0, 0.0), egui::Sense::hover());
 
                     // Own layouter: zoomed font, optional wrapping, find highlight.
-                    let (editor_font, wrap) = (font.clone(), !self.no_wrap);
+                    let editor_font = font.clone();
                     let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
                         let text = buf.as_str();
                         let fmt = egui::TextFormat::simple(editor_font.clone(), ui.visuals().text_color());
                         let mut job = egui::text::LayoutJob::default();
-                        job.wrap.max_width = if wrap { wrap_width } else { f32::INFINITY };
+                        job.wrap.max_width = if no_wrap { f32::INFINITY } else { wrap_width };
                         match highlight {
                             Some((a, b)) if b <= text.len() && text.is_char_boundary(a) && text.is_char_boundary(b) => {
                                 let marked = egui::TextFormat { background: ui.visuals().selection.bg_fill, ..fmt.clone() };
@@ -437,14 +449,14 @@ impl eframe::App for Notepad {
                         ui.ctx().fonts_mut(|f| f.layout_job(job))
                     };
 
-                    let out = egui::TextEdit::multiline(&mut self.text)
-                        .id(editor_id())
+                    let out = egui::TextEdit::multiline(&mut d.text)
+                        .id(editor_id)
                         .layouter(&mut layouter)
                         .frame(egui::Frame::NONE)
                         .desired_width(f32::INFINITY)
                         .min_size(ui.available_size())
                         .show(ui);
-                    if out.response.changed() { self.dirty = true; }
+                    if out.response.changed() { d.dirty = true; }
 
                     // Line numbers: one per logical line, at the first wrapped row of that line.
                     // Only rows inside the visible area are painted (large files).
@@ -465,7 +477,7 @@ impl eframe::App for Notepad {
                         starts_line = row.ends_with_newline;
                     }
 
-                    if let Some(i) = self.scroll_to.take() {
+                    if let Some(i) = d.scroll_to.take() {
                         let r = out.galley.pos_from_cursor(CCursor::new(i)).translate(out.galley_pos.to_vec2());
                         ui.scroll_to_rect(r, Some(egui::Align::Center));
                     }
@@ -479,5 +491,36 @@ impl eframe::App for Notepad {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.last_title = title;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closing_tabs_keeps_a_sensible_active_tab() {
+        let ctx = egui::Context::default();
+        let mut app = Notepad::new(vec![]);
+        app.new_tab();
+        app.new_tab(); // ids 0, 1, 2; active = 2
+        let ids = |a: &Notepad| a.docs.iter().map(|d| d.id).collect::<Vec<_>>();
+
+        app.close_tab(0, &ctx, None); // closing a tab left of the active one
+        assert_eq!((ids(&app), app.doc().id), (vec![1, 2], 2));
+
+        app.close_tab(app.active, &ctx, None); // closing the active, last tab
+        assert_eq!((ids(&app), app.doc().id), (vec![1], 1));
+
+        app.close_tab(0, &ctx, None); // closing the only tab leaves a fresh empty one
+        assert_eq!(app.docs.len(), 1);
+        assert!(app.doc().is_blank() && app.doc().id != 1);
+
+        app.new_tab();
+        app.new_tab();
+        app.next_tab(1); // wraps around
+        assert_eq!(app.active, 0);
+        app.next_tab(-1);
+        assert_eq!(app.active, 2);
     }
 }

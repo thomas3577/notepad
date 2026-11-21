@@ -3,6 +3,7 @@
 mod alt_tap;
 mod app;
 mod dialogs;
+mod doc;
 mod encoding;
 mod files;
 mod text;
@@ -28,8 +29,8 @@ fn main() -> eframe::Result {
     #[cfg(windows)]
     harden_dll_search();
 
-    // "Open with" / drag onto the .exe passes the file path as first argument.
-    let app = app::Notepad::new(std::env::args_os().nth(1).map(PathBuf::from));
+    // "Open with" / dragging files onto the .exe passes their paths as arguments; one tab each.
+    let app = app::Notepad::new(std::env::args_os().skip(1).map(PathBuf::from).collect());
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).expect("valid icon png");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_icon(icon),
