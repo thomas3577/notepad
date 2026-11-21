@@ -266,26 +266,95 @@ impl Notepad {
         });
     }
 
+    /// Tabs like Windows 11 Notepad: the active tab has the editor's color and merges into it;
+    /// × inside the tab, a dot instead while it has unsaved changes. Icons are painted
+    /// (egui's default fonts lack ✕ and ☰).
     fn tab_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, p: Parent) {
+        use egui::{Color32, CornerRadius, Rect, Role, Sense, Stroke, WidgetInfo, pos2, vec2};
+        const H: f32 = 32.0;
         let (mut switch_to, mut close, mut add) = (None, None, false);
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for (i, d) in self.docs.iter().enumerate() {
-                    let label = format!("{}{}", if d.dirty { "*" } else { "" }, d.name());
-                    let hover = d.path.as_ref().map_or("Untitled".into(), |p| p.display().to_string());
-                    let r = ui.selectable_label(i == self.active, label).on_hover_text(hover);
-                    if r.clicked() { switch_to = Some(i); }
-                    if r.middle_clicked() { close = Some(i); }
-                    // × (U+00D7): egui's default fonts have no ✕
-                    if ui.small_button("×").on_hover_text("Close Tab (Ctrl+W)").clicked() { close = Some(i); }
-                    ui.separator();
-                }
-                if ui.button("+").on_hover_text("New Tab (Ctrl+N)").clicked() { add = true; }
+        let v = ui.visuals().clone();
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let cross = |painter: &egui::Painter, c: egui::Pos2, color: Color32| {
+            let (r, stroke) = (3.5, Stroke::new(1.3, color));
+            painter.line_segment([c + vec2(-r, -r), c + vec2(r, r)], stroke);
+            painter.line_segment([c + vec2(-r, r), c + vec2(r, -r)], stroke);
+        };
+
+        egui::ScrollArea::horizontal()
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    for (i, d) in self.docs.iter().enumerate() {
+                        let active = i == self.active;
+                        let name = d.name();
+                        let short: String = if name.chars().count() > 28 {
+                            name.chars().take(27).chain(['…']).collect()
+                        } else {
+                            name.to_string()
+                        };
+                        let galley = ui.painter().layout_no_wrap(short, font.clone(), Color32::PLACEHOLDER);
+                        let w = (12.0 + galley.size().x + 10.0 + 20.0 + 6.0).max(96.0);
+                        let (rect, resp) = ui.allocate_exact_size(vec2(w, H), Sense::click());
+                        resp.widget_info(|| WidgetInfo::selected(Role::Tab, true, active, &name));
+                        let close_rect = Rect::from_center_size(pos2(rect.right() - 16.0, rect.center().y), vec2(20.0, 20.0));
+                        let close_resp = ui.interact(close_rect, ui.scope_id().with(("close-tab", d.id)), Sense::click());
+                        close_resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Close tab"));
+                        let hovered = resp.hovered() || close_resp.hovered();
+
+                        let painter = ui.painter();
+                        if active {
+                            let top = CornerRadius { nw: 7, ne: 7, sw: 0, se: 0 };
+                            painter.rect_filled(rect, top, v.panel_fill);
+                        } else if hovered {
+                            painter.rect_filled(rect.shrink2(vec2(0.0, 3.0)).translate(vec2(0.0, -1.0)), 6.0, v.widgets.hovered.weak_bg_fill);
+                        }
+                        let text_color = if active { v.strong_text_color() } else { v.text_color() };
+                        painter.galley(pos2(rect.left() + 12.0, rect.center().y - galley.size().y / 2.0), galley, text_color);
+
+                        if close_resp.hovered() {
+                            painter.rect_filled(close_rect, 4.0, v.widgets.hovered.bg_fill);
+                        }
+                        if d.dirty && !hovered {
+                            painter.circle_filled(close_rect.center(), 3.5, text_color); // unsaved
+                        } else if active || hovered {
+                            cross(painter, close_rect.center(), text_color);
+                        }
+
+                        let hover = d.path.as_ref().map_or("Untitled".into(), |p| p.display().to_string());
+                        let resp = resp.on_hover_text(hover);
+                        let close_resp = close_resp.on_hover_text("Close Tab (Ctrl+W)");
+                        if close_resp.clicked() || resp.middle_clicked() || close_resp.middle_clicked() {
+                            close = Some(i);
+                        } else if resp.clicked() {
+                            switch_to = Some(i);
+                        }
+                    }
+
+                    // + : new tab
+                    let (rect, resp) = ui.allocate_exact_size(vec2(30.0, H), Sense::click());
+                    resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, "New tab"));
+                    let c = rect.center() + vec2(0.0, -1.0);
+                    if resp.hovered() {
+                        ui.painter().rect_filled(Rect::from_center_size(c, vec2(26.0, 24.0)), 6.0, v.widgets.hovered.weak_bg_fill);
+                    }
+                    let stroke = Stroke::new(1.4, v.text_color());
+                    ui.painter().line_segment([c + vec2(-5.5, 0.0), c + vec2(5.5, 0.0)], stroke);
+                    ui.painter().line_segment([c + vec2(0.0, -5.5), c + vec2(0.0, 5.5)], stroke);
+                    if resp.on_hover_text("New Tab (Ctrl+N)").clicked() {
+                        add = true;
+                    }
+                });
             });
-        });
-        if let Some(i) = switch_to { self.active = i; }
-        if let Some(i) = close { self.close_tab(i, ctx, p); }
-        if add { self.new_tab(); }
+        if let Some(i) = close {
+            self.close_tab(i, ctx, p);
+        } else if let Some(i) = switch_to {
+            self.active = i;
+        }
+        if add {
+            self.new_tab();
+        }
     }
 
     fn title(&self) -> String {
@@ -406,7 +475,15 @@ impl eframe::App for Notepad {
 
         // No "discard changes?" on close: the session keeps them (eframe calls save() on exit).
 
-        egui::Panel::top("tabs").show(ui, |ui| self.tab_bar(ui, &ctx, p));
+        // Tab strip a bit darker than the editor, so the active tab (editor color) stands out
+        let strip = {
+            let (c, f) = (ui.visuals().panel_fill, if ui.visuals().dark_mode { 0.72 } else { 0.92 });
+            egui::Color32::from_rgb((c.r() as f32 * f) as u8, (c.g() as f32 * f) as u8, (c.b() as f32 * f) as u8)
+        };
+        egui::Panel::top("tabs")
+            .frame(egui::Frame::NONE.fill(strip).inner_margin(egui::Margin { left: 6, right: 6, top: 5, bottom: 0 }))
+            .show_separator_line(false)
+            .show(ui, |ui| self.tab_bar(ui, &ctx, p));
 
         if self.show_menu {
             egui::Panel::top("menu").show(ui, |ui| {
