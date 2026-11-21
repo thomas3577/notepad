@@ -72,11 +72,12 @@ they are only previews).
 ## Encoding detection on open
 
 1. File has a BOM → UTF-8 with BOM or UTF-16
-2. Valid UTF-8 → UTF-8
-3. Otherwise → ANSI (Windows-1252)
+2. Looks like UTF-16 without BOM (zero high bytes) → UTF-16, saved with BOM
+3. Valid UTF-8 → UTF-8
+4. Otherwise → ANSI (Windows-1252)
 
 The encoding used for saving can be changed in the **Encoding** menu. If the text contains characters that ANSI cannot represent, Notepad offers to save as UTF-8 instead.
 
 ## Limitations
 
-- UTF-16 without BOM is not detected.
+- UTF-16 without BOM is only detected for mostly Latin-script text.

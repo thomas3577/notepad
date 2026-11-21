@@ -25,8 +25,31 @@ const W1252: [char; 32] = [
     '\u{2DC}', '\u{2122}', '\u{161}', '\u{203A}', '\u{153}', '\u{9D}', '\u{17E}', '\u{178}',
 ];
 
+fn units(b: &[u8], f: fn([u8; 2]) -> u16) -> Vec<u16> {
+    b.chunks_exact(2).map(|c| f([c[0], c[1]])).collect()
+}
+
 fn utf16(b: &[u8], f: fn([u8; 2]) -> u16) -> String {
-    String::from_utf16_lossy(&b.chunks_exact(2).map(|c| f([c[0], c[1]])).collect::<Vec<_>>())
+    String::from_utf16_lossy(&units(b, f))
+}
+
+/// UTF-16 without BOM: in Latin-script text nearly every high byte is 0.
+// ponytail: NUL-byte heuristic, misses BOM-less UTF-16 that is mostly non-Latin (e.g. CJK).
+fn sniff_utf16(b: &[u8]) -> Option<(String, Enc)> {
+    if b.len() < 2 || b.len() % 2 != 0 {
+        return None;
+    }
+    let pairs = b.len() / 2;
+    let zeros = |start: usize| b.iter().skip(start).step_by(2).filter(|&&c| c == 0).count();
+    let (even, odd) = (zeros(0), zeros(1));
+    let (f, enc): (fn([u8; 2]) -> u16, _) = if odd * 2 > pairs && even * 10 < pairs {
+        (u16::from_le_bytes, Enc::Utf16Le)
+    } else if even * 2 > pairs && odd * 10 < pairs {
+        (u16::from_be_bytes, Enc::Utf16Be)
+    } else {
+        return None;
+    };
+    String::from_utf16(&units(b, f)).ok().map(|s| (s, enc))
 }
 
 impl Enc {
@@ -42,8 +65,9 @@ impl Enc {
         }
     }
 
-    /// BOM → that encoding; valid UTF-8 → UTF-8; anything else → Windows-1252 (never fails).
-    // ponytail: no BOM-less UTF-16 detection, such files open as Windows-1252.
+    /// BOM → that encoding; UTF-16 pattern → UTF-16; valid UTF-8 → UTF-8;
+    /// anything else → Windows-1252 (never fails).
+    /// BOM-less UTF-16 is saved with BOM, like Windows Notepad does.
     fn decode(b: &[u8]) -> (String, Enc) {
         if let Some(r) = b.strip_prefix(b"\xEF\xBB\xBF") {
             (String::from_utf8_lossy(r).into(), Enc::Utf8Bom)
@@ -51,6 +75,9 @@ impl Enc {
             (utf16(r, u16::from_le_bytes), Enc::Utf16Le)
         } else if let Some(r) = b.strip_prefix(b"\xFE\xFF") {
             (utf16(r, u16::from_be_bytes), Enc::Utf16Be)
+        } else if let Some(hit) = sniff_utf16(b) {
+            // must run before the UTF-8 check: ASCII in UTF-16 is also valid UTF-8
+            hit
         } else if let Ok(s) = std::str::from_utf8(b) {
             (s.into(), Enc::Utf8)
         } else {
@@ -426,6 +453,18 @@ mod tests {
         assert_eq!(find("äb äb", "äb", 4, true), Some((0, 2)));
         assert_eq!(find("abc", "x", 0, true), None);
         assert_eq!(find("abc", "", 0, true), None);
+    }
+
+    #[test]
+    fn utf16_without_bom() {
+        let t = "Hello Grüße\r\nline 2";
+        let le: Vec<u8> = t.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let be: Vec<u8> = t.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        assert_eq!(Enc::decode(&le), (t.to_string(), Enc::Utf16Le));
+        assert_eq!(Enc::decode(&be), (t.to_string(), Enc::Utf16Be));
+        // plain text and binary-ish data are not mistaken for UTF-16
+        assert_eq!(Enc::decode(b"Hello world!").1, Enc::Utf8);
+        assert_eq!(Enc::decode(b"a\0\0b").1, Enc::Utf8);
     }
 
     #[test]
