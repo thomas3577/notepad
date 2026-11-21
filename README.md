@@ -98,3 +98,8 @@ The encoding used for saving can be changed in the **Encoding** menu. If the tex
 - UTF-16 without BOM is only detected for mostly Latin-script text.
 - Large files use a lot of memory: egui lays out the whole text (a 5.6 MB file needs about 1.3 GB RAM).
   Notepad asks before opening files over 10 MB, and limits undo history for large files.
+
+## License
+
+[MIT](LICENSE)
+

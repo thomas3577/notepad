@@ -208,6 +208,9 @@ const LARGE_FILE_BYTES: u64 = 10 * 1024 * 1024;
 /// Upper bound for egui's undo history, which stores a full copy of the text per step.
 const UNDO_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 
+/// Line ending for new documents: CRLF on Windows, like Windows Notepad.
+const NEW_DOC_CRLF: bool = cfg!(windows);
+
 /// 1-based line and column of char index `idx`.
 fn line_col(text: &str, idx: usize) -> (usize, usize) {
     let before = &text[..char_to_byte(text, idx)];
@@ -291,7 +294,7 @@ impl Notepad {
 
     fn new_file(&mut self, p: Parent) {
         if self.confirm_discard(p) {
-            self.set_document(String::new(), None, Enc::default(), false);
+            self.set_document(String::new(), None, Enc::default(), NEW_DOC_CRLF);
         }
     }
 
@@ -309,7 +312,7 @@ impl Notepad {
             Ok(m) => m,
             // Like Windows Notepad: a new document that will be saved under this name.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return self.set_document(String::new(), Some(path), Enc::default(), false);
+                return self.set_document(String::new(), Some(path), Enc::default(), NEW_DOC_CRLF);
             }
             Err(e) => return error(p, format!("Could not open file: {e}")),
         };
@@ -336,7 +339,8 @@ impl Notepad {
                 enc.name()
             ));
         }
-        let crlf = text.contains("\r\n");
+        // no line break at all: use the platform default, so the first Enter matches it
+        let crlf = if text.contains('\n') { text.contains("\r\n") } else { NEW_DOC_CRLF };
         let text = if crlf { text.replace("\r\n", "\n") } else { text };
         self.set_document(text, Some(path), enc, crlf);
     }
@@ -579,6 +583,8 @@ impl eframe::App for Notepad {
                 ..Default::default()
             }));
             state.store(&ctx, editor_id());
+            // ready to type right away, like Windows Notepad
+            ctx.memory_mut(|m| m.request_focus(editor_id()));
         }
 
         // While the editor is not focused (e.g. typing in the find bar), egui hides the
@@ -688,6 +694,7 @@ fn main() -> eframe::Result {
     // "Open with" / drag onto the .exe passes the file path as first argument.
     let app = Notepad {
         zoom: 1.0,
+        crlf: NEW_DOC_CRLF,
         reset_editor: true,
         pending_open: std::env::args_os().nth(1).map(PathBuf::from),
         ..Default::default()
