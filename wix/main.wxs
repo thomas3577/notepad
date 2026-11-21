@@ -4,11 +4,15 @@
   Build: cargo build -r; wix build wix\main.wxs -o target\notepad.msi
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="Notepad" Manufacturer="thomas3577" Version="0.1.0" Scope="perUser"
+  <!-- Version comes from the exe's version resource (set from Cargo.toml by build.rs) -->
+  <Package Name="Notepad" Manufacturer="thomas3577" Version="!(bind.FileVersion.NotepadExe)" Scope="perUser"
            UpgradeCode="7d3f2a51-6c0e-4b8e-9a1d-2f5c8e4b9a70">
     <MajorUpgrade AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="Eine neuere Version ist bereits installiert." />
     <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="app.ico" SourceFile="$(sys.SOURCEFILEDIR)..\assets\icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="app.ico" />
 
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="ProgramsDir" Name="Programs">

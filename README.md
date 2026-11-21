@@ -58,7 +58,13 @@ wix build wix\main.wxs -o target\notepad.msi
 Als Standard-App muss der Notepad einmalig per „Öffnen mit → Andere App auswählen → Immer“
 gewählt werden. Das lässt Windows auch Installern nicht zu.
 
-Die Version steht in `wix\main.wxs` (`Version="…"`) und wird nicht aus `Cargo.toml` übernommen.
+Die MSI-Version wird aus `Cargo.toml` übernommen (über die Versionsinfo der exe).
+
+## Icon
+
+`assets/icon.ico` wird per `build.rs` in die exe eingebettet, `assets/icon.png` ist das Fenster-Icon.
+Beide erzeugt `assets\make-icon.ps1 -OutDir assets` (danach `icon-16.png`/`icon-32.png` löschen,
+das sind nur Vorschauen).
 
 ## Kodierung beim Öffnen
 

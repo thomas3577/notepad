@@ -363,7 +363,12 @@ fn main() -> eframe::Result {
     if let Some(path) = std::env::args_os().nth(1) {
         app.load(path.into());
     }
-    eframe::run_native("Notepad", eframe::NativeOptions::default(), Box::new(|_| Ok(Box::new(app))))
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).expect("valid icon png");
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_icon(icon),
+        ..Default::default()
+    };
+    eframe::run_native("Notepad", options, Box::new(|_| Ok(Box::new(app))))
 }
 
 #[cfg(test)]
