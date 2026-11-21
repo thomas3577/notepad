@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-#[derive(Clone, Copy, PartialEq, Default, Debug)]
+#[derive(Clone, Copy, PartialEq, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Enc {
     #[default]
     Utf8,

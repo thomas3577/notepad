@@ -6,6 +6,8 @@ mod dialogs;
 mod doc;
 mod encoding;
 mod files;
+mod instance;
+mod session;
 mod text;
 
 use eframe::egui;
@@ -30,19 +32,38 @@ fn main() -> eframe::Result {
     harden_dll_search();
 
     // "Open with" / dragging files onto the .exe passes their paths as arguments; one tab each.
-    let app = app::Notepad::new(std::env::args_os().skip(1).map(PathBuf::from).collect());
+    // Absolute, because a running Notepad may get them (it has another working directory).
+    let files: Vec<PathBuf> = std::env::args_os()
+        .skip(1)
+        .map(|a| std::path::absolute(&a).unwrap_or_else(|_| a.into()))
+        .collect();
+
+    let start = instance::start(&files);
+    if matches!(start, instance::Start::Forwarded) {
+        return Ok(()); // the running Notepad opens them
+    }
+
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).expect("valid icon png");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_icon(icon),
+        // eframe remembers the window position and size here
+        persistence_path: session::dir().map(|d| d.join("window.ron")),
         ..Default::default()
     };
     eframe::run_native(
         "Notepad",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             // We zoom only the text (like Windows Notepad), not egui's whole UI.
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
-            Ok(Box::new(app))
+            let incoming = match start {
+                instance::Start::Primary(listener) => {
+                    let ctx = cc.egui_ctx.clone();
+                    Some(instance::serve(listener, move || ctx.request_repaint()))
+                }
+                _ => None,
+            };
+            Ok(Box::new(app::Notepad::new(files, session::load(), incoming)))
         }),
     )
 }

@@ -1,13 +1,15 @@
 //! The Notepad window: tabs, menus, find bar, editor, status bar.
 
 use crate::alt_tap::AltTap;
-use crate::dialogs::{Parent, ask, ask_yes_no_cancel, file_dialog};
+use crate::dialogs::{Parent, ask_yes_no_cancel, error, file_dialog};
 use crate::doc::Doc;
 use crate::encoding::Enc;
+use crate::session::{self, SavedTab, Session};
 use crate::text::{char_to_byte, find, line_col, replace_all};
 use eframe::egui;
 use egui::text::{CCursor, CCursorRange};
 use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 
 /// Upper bound for egui's undo history, which stores a full copy of the text per step.
 const UNDO_BUDGET_BYTES: usize = 64 * 1024 * 1024;
@@ -35,12 +37,70 @@ pub struct Notepad {
     zoom: f32,
     /// Files from the command line, opened on the first frame so dialogs have a parent window.
     pending_open: Vec<PathBuf>,
+    /// Last session, restored on the first frame (before `pending_open`).
+    restore: Option<Session>,
+    /// File lists handed over by later starts of Notepad (single instance).
+    incoming: Option<Receiver<Vec<PathBuf>>>,
+    /// Last written session, to skip writing an unchanged one.
+    last_session: String,
+    session_error_shown: bool,
 }
 
 impl Notepad {
-    /// One empty tab; `open` (e.g. from the command line) is loaded on the first frame.
-    pub fn new(open: Vec<PathBuf>) -> Self {
-        Notepad { docs: vec![Doc::new(0, None)], next_id: 1, zoom: 1.0, pending_open: open, ..Default::default() }
+    /// One empty tab. `restore` and `open` (e.g. from the command line) are loaded on the
+    /// first frame; `incoming` delivers files from later starts.
+    pub fn new(open: Vec<PathBuf>, restore: Option<Session>, incoming: Option<Receiver<Vec<PathBuf>>>) -> Self {
+        Notepad {
+            docs: vec![Doc::new(0, None)],
+            next_id: 1,
+            zoom: 1.0,
+            pending_open: open,
+            restore,
+            incoming,
+            ..Default::default()
+        }
+    }
+
+    /// Tabs to keep: changed and Untitled tabs with their text, unchanged files by path only.
+    fn session(&self) -> Session {
+        let keep = |d: &&Doc| !d.is_blank();
+        Session {
+            tabs: self
+                .docs
+                .iter()
+                .filter(keep)
+                .map(|d| SavedTab {
+                    path: d.path.clone(),
+                    enc: d.enc,
+                    crlf: d.crlf,
+                    text: (d.dirty || d.path.is_none()).then(|| d.text.clone()),
+                })
+                .collect(),
+            active: self.docs[..self.active].iter().filter(keep).count(),
+            zoom: self.zoom,
+            no_wrap: self.no_wrap,
+        }
+    }
+
+    fn restore_session(&mut self, s: Session, p: Parent) {
+        let mut docs = Vec::new();
+        for tab in s.tabs {
+            let id = self.take_id();
+            let doc = match (tab.text, tab.path) {
+                (Some(text), path) => {
+                    Some(Doc { text, enc: tab.enc, crlf: tab.crlf, dirty: true, ..Doc::new(id, path) })
+                }
+                // unchanged file: read it again (it may have changed); skip it if it is gone
+                (None, Some(path)) if path.exists() => Doc::load(id, path, p),
+                (None, _) => None,
+            };
+            docs.extend(doc);
+        }
+        if !docs.is_empty() {
+            self.active = s.active.min(docs.len() - 1);
+            self.docs = docs;
+        }
+        (self.zoom, self.no_wrap) = (if s.zoom > 0.0 { s.zoom } else { 1.0 }, s.no_wrap);
     }
 
     fn doc(&self) -> &Doc {
@@ -235,12 +295,51 @@ impl Notepad {
 }
 
 impl eframe::App for Notepad {
+    /// Called by eframe on exit and every `auto_save_interval`.
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        let s = session::to_string(&self.session());
+        if s == self.last_session {
+            return;
+        }
+        match session::store(&s) {
+            Ok(()) => self.last_session = s,
+            // once per run: repeating this every few seconds would make Notepad unusable
+            Err(e) if !self.session_error_shown => {
+                self.session_error_shown = true;
+                error(None, format!("Could not save the session (open tabs and unsaved changes): {e}"));
+            }
+            Err(_) => {}
+        }
+    }
+
+    fn auto_save_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(5) // cheap: unchanged sessions are not written
+    }
+
+    /// eframe only keeps the window position; egui's memory would include every tab's
+    /// undo history (full copies of the text).
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let p = Some(&*frame);
 
+        if let Some(s) = self.restore.take() {
+            self.restore_session(s, p);
+        }
         for path in std::mem::take(&mut self.pending_open) {
             self.open_path(path, p);
+        }
+        // Files from a later start of Notepad: open them and come to the front
+        let handed_over: Vec<Vec<PathBuf>> = self.incoming.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default();
+        if !handed_over.is_empty() {
+            for path in handed_over.into_iter().flatten() {
+                self.open_path(path, p);
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
 
         // Esc closes the find bar, else the menu bar; otherwise menus and popups need it
@@ -305,14 +404,7 @@ impl eframe::App for Notepad {
             self.open_path(path, p);
         }
 
-        // Close guard
-        let unsaved = self.docs.iter().filter(|d| d.dirty).count();
-        if ctx.input(|i| i.viewport().close_requested())
-            && unsaved > 0
-            && !ask(p, &format!("Discard unsaved changes in {unsaved} tab(s)?"))
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        }
+        // No "discard changes?" on close: the session keeps them (eframe calls save() on exit).
 
         egui::Panel::top("tabs").show(ui, |ui| self.tab_bar(ui, &ctx, p));
 
@@ -501,7 +593,7 @@ mod tests {
     #[test]
     fn closing_tabs_keeps_a_sensible_active_tab() {
         let ctx = egui::Context::default();
-        let mut app = Notepad::new(vec![]);
+        let mut app = Notepad::new(vec![], None, None);
         app.new_tab();
         app.new_tab(); // ids 0, 1, 2; active = 2
         let ids = |a: &Notepad| a.docs.iter().map(|d| d.id).collect::<Vec<_>>();
@@ -522,5 +614,30 @@ mod tests {
         assert_eq!(app.active, 0);
         app.next_tab(-1);
         assert_eq!(app.active, 2);
+    }
+
+    #[test]
+    fn session_keeps_unsaved_text() {
+        let mut app = Notepad::new(vec![], None, None); // tab 0: blank, not kept
+        app.new_tab(); // Untitled with text
+        app.doc_mut().text = "draft".into();
+        app.doc_mut().dirty = true;
+        app.new_tab(); // changed file
+        let d = app.doc_mut();
+        (d.path, d.text, d.dirty) = (Some("C:\\x\\changed.txt".into()), "new".into(), true);
+        app.new_tab(); // unchanged file: path only (this one no longer exists)
+        app.doc_mut().path = Some("C:\\does-not-exist\\clean.txt".into());
+        (app.active, app.zoom) = (2, 1.5);
+
+        let s = app.session();
+        let texts: Vec<_> = s.tabs.iter().map(|t| t.text.as_deref()).collect();
+        assert_eq!(texts, [Some("draft"), Some("new"), None]);
+        assert_eq!(s.active, 1); // index among the kept tabs
+
+        let mut restored = Notepad::new(vec![], None, None);
+        restored.restore_session(s, None);
+        let tabs: Vec<_> = restored.docs.iter().map(|d| (d.text.as_str(), d.dirty, d.path.is_some())).collect();
+        assert_eq!(tabs, [("draft", true, false), ("new", true, true)]); // missing file skipped
+        assert_eq!((restored.active, restored.zoom), (1, 1.5));
     }
 }
