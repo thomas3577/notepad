@@ -556,12 +556,17 @@ impl eframe::App for Notepad {
                 .and_then(|s| s.cursor.char_range())
                 .map_or(0, |r| r.primary.index.into());
             let (ln, col) = line_col(&self.text, cursor);
-            ui.label(format!(
-                "Ln {ln}, Col {col}  |  {:.0}%  |  {}  |  {}",
-                self.zoom * 100.0,
-                self.enc.name(),
-                if self.crlf { "CRLF" } else { "LF" }
-            ));
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "Ln {ln}, Col {col}  |  {:.0}%  |  {}  |  {}",
+                    self.zoom * 100.0,
+                    self.enc.name(),
+                    if self.crlf { "CRLF" } else { "LF" }
+                ));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak(concat!("v", env!("CARGO_PKG_VERSION")));
+                });
+            });
         });
 
         // New document: fresh undo history (sized so large files don't keep ~100 full copies)
