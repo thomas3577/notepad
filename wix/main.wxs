@@ -1,6 +1,6 @@
 <!--
   Per-user installer (no admin): installs to %LOCALAPPDATA%\Programs\Notepad,
-  registers .txt (open, "New > Textdokument", "Open with") and a Start menu entry.
+  registers .txt (open, "New > Text Document", "Open with") and a Start menu entry.
   Build: cargo build -r; wix build wix\main.wxs -o target\notepad.msi
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
@@ -8,7 +8,7 @@
   <Package Name="Notepad" Manufacturer="thomas3577" Version="!(bind.FileVersion.NotepadExe)" Scope="perUser"
            UpgradeCode="7d3f2a51-6c0e-4b8e-9a1d-2f5c8e4b9a70">
     <MajorUpgrade AllowSameVersionUpgrades="yes"
-                  DowngradeErrorMessage="Eine neuere Version ist bereits installiert." />
+                  DowngradeErrorMessage="A newer version is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <Icon Id="app.ico" SourceFile="$(sys.SOURCEFILEDIR)..\assets\icon.ico" />
@@ -36,7 +36,7 @@
 
         <!-- ProgID: name in "New" menu, icon, open command -->
         <RegistryKey Root="HKCU" Key="Software\Classes\RustNotepad.txt" ForceDeleteOnUninstall="yes">
-          <RegistryValue Type="string" Value="Textdokument" />
+          <RegistryValue Type="string" Value="Text Document" />
           <RegistryValue Key="DefaultIcon" Type="string" Value="&quot;[#NotepadExe]&quot;,0" />
           <RegistryValue Key="shell\open\command" Type="string" Value="&quot;[#NotepadExe]&quot; &quot;%1&quot;" />
         </RegistryKey>

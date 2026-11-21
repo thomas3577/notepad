@@ -35,7 +35,7 @@ impl Enc {
     fn name(self) -> &'static str {
         match self {
             Enc::Utf8 => "UTF-8",
-            Enc::Utf8Bom => "UTF-8 mit BOM",
+            Enc::Utf8Bom => "UTF-8 with BOM",
             Enc::Utf16Le => "UTF-16 LE",
             Enc::Utf16Be => "UTF-16 BE",
             Enc::Win1252 => "ANSI (Windows-1252)",
@@ -128,7 +128,7 @@ struct Notepad {
 impl Notepad {
     /// true = ok to throw away current text
     fn confirm_discard(&self) -> bool {
-        !self.dirty || ask("Ungespeicherte Änderungen verwerfen?")
+        !self.dirty || ask("Discard unsaved changes?")
     }
 
     fn new_file(&mut self) {
@@ -155,14 +155,14 @@ impl Notepad {
                 self.text = text.replace("\r\n", "\n");
                 (self.path, self.dirty, self.enc) = (Some(path), false, enc);
             }
-            Err(e) => error(format!("Öffnen fehlgeschlagen: {e}")),
+            Err(e) => error(format!("Could not open file: {e}")),
         }
     }
 
     fn save(&mut self, save_as: bool) {
         let path = match (&self.path, save_as) {
             (Some(p), false) => p.clone(),
-            _ => match FileDialog::new().set_file_name("unbenannt.txt").save_file() {
+            _ => match FileDialog::new().set_file_name("untitled.txt").save_file() {
                 Some(p) => p,
                 None => return,
             },
@@ -171,7 +171,7 @@ impl Notepad {
         let bytes = match self.enc.encode(&text) {
             Some(b) => b,
             None if ask(&format!(
-                "Der Text enthält Zeichen, die in {} nicht darstellbar sind.\nStattdessen als UTF-8 speichern?",
+                "The text contains characters that cannot be represented in {}.\nSave as UTF-8 instead?",
                 self.enc.name()
             )) =>
             {
@@ -182,7 +182,7 @@ impl Notepad {
         };
         match std::fs::write(&path, bytes) {
             Ok(()) => (self.path, self.dirty) = (Some(path), false),
-            Err(e) => error(format!("Speichern fehlgeschlagen: {e}")),
+            Err(e) => error(format!("Could not save file: {e}")),
         }
     }
 
@@ -230,7 +230,7 @@ impl Notepad {
     }
 
     fn title(&self) -> String {
-        let name = self.path.as_ref().and_then(|p| p.file_name()).map_or("Unbenannt".into(), |n| n.to_string_lossy());
+        let name = self.path.as_ref().and_then(|p| p.file_name()).map_or("Untitled".into(), |n| n.to_string_lossy());
         format!("{}{name} - Notepad", if self.dirty { "*" } else { "" })
     }
 }
@@ -266,19 +266,19 @@ impl eframe::App for Notepad {
 
         egui::Panel::top("menu").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("Datei", |ui| {
-                    if ui.button("Neu (Ctrl+N)").clicked() { self.new_file(); }
-                    if ui.button("Öffnen… (Ctrl+O)").clicked() { self.open(); }
-                    if ui.button("Speichern (Ctrl+S)").clicked() { self.save(false); }
-                    if ui.button("Speichern unter…").clicked() { self.save(true); }
+                ui.menu_button("File", |ui| {
+                    if ui.button("New (Ctrl+N)").clicked() { self.new_file(); }
+                    if ui.button("Open… (Ctrl+O)").clicked() { self.open(); }
+                    if ui.button("Save (Ctrl+S)").clicked() { self.save(false); }
+                    if ui.button("Save As…").clicked() { self.save(true); }
                 });
-                ui.menu_button("Bearbeiten", |ui| {
-                    if ui.button("Suchen/Ersetzen (Ctrl+F)").clicked() {
+                ui.menu_button("Edit", |ui| {
+                    if ui.button("Find/Replace (Ctrl+F)").clicked() {
                         (self.find_open, self.find_focus) = (true, true);
                     }
-                    if ui.button("Weitersuchen (F3)").clicked() { self.find_next(&ctx); }
+                    if ui.button("Find Next (F3)").clicked() { self.find_next(&ctx); }
                 });
-                ui.menu_button("Kodierung", |ui| {
+                ui.menu_button("Encoding", |ui| {
                     for e in Enc::ALL {
                         if ui.radio_value(&mut self.enc, e, e.name()).changed() { self.dirty = true; }
                     }
@@ -295,17 +295,17 @@ impl eframe::App for Notepad {
         if self.find_open {
             egui::Panel::top("find").show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Suchen:");
+                    ui.label("Find:");
                     let r = ui.text_edit_singleline(&mut self.needle);
                     if std::mem::take(&mut self.find_focus) { r.request_focus(); }
                     if r.changed() { self.not_found = false; }
                     let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    ui.label("Ersetzen:");
+                    ui.label("Replace:");
                     ui.text_edit_singleline(&mut self.replacement);
-                    if ui.button("Weitersuchen").clicked() || enter { self.find_next(&ctx); }
-                    if ui.button("Ersetzen").clicked() { self.replace(&ctx); }
-                    if ui.button("Alle ersetzen").clicked() { self.replace_all(); }
-                    if self.not_found { ui.colored_label(ui.visuals().warn_fg_color, "Nicht gefunden"); }
+                    if ui.button("Find Next").clicked() || enter { self.find_next(&ctx); }
+                    if ui.button("Replace").clicked() { self.replace(&ctx); }
+                    if ui.button("Replace All").clicked() { self.replace_all(); }
+                    if self.not_found { ui.colored_label(ui.visuals().warn_fg_color, "Not found"); }
                     if ui.button("✕").clicked() { self.find_open = false; }
                 });
             });
