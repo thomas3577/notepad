@@ -8,7 +8,7 @@ A simple text editor written in Rust, built with [egui/eframe](https://github.co
 
 - New, Open, Save, Save As
 - Line numbers (correct with word wrap)
-- Find & Replace (Find Next, Replace, Replace All)
+- Find & Replace (Find Next, Replace, Replace All), case-insensitive by default ("Match case" option)
 - Encodings: UTF-8, UTF-8 with BOM, UTF-16 LE/BE, ANSI (Windows-1252)
 - Line endings: CRLF and LF are detected and kept on save
 - Warning before discarding unsaved changes
@@ -79,5 +79,4 @@ The encoding used for saving can be changed in the **Encoding** menu. If the tex
 
 ## Limitations
 
-- Search is case-sensitive.
 - UTF-16 without BOM is not detected.

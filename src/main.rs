@@ -83,16 +83,43 @@ fn char_to_byte(t: &str, c: usize) -> usize {
     t.char_indices().nth(c).map_or(t.len(), |(i, _)| i)
 }
 
+// ponytail: per-char case folding, so "ß" never matches "SS"; good enough for a notepad.
+fn char_eq(a: char, b: char, match_case: bool) -> bool {
+    a == b || (!match_case && a.to_lowercase().eq(b.to_lowercase()))
+}
+
+fn match_at(t: &[char], i: usize, n: &[char], match_case: bool) -> bool {
+    t.len() >= i + n.len() && t[i..].iter().zip(n).all(|(&a, &b)| char_eq(a, b, match_case))
+}
+
 /// Next match at/after char index `from`, wrapping around. Returns a char range.
-// ponytail: case-sensitive only.
-fn find(text: &str, needle: &str, from: usize) -> Option<(usize, usize)> {
-    if needle.is_empty() {
+// ponytail: naive O(text × needle) scan, fine for notepad-sized files.
+fn find(text: &str, needle: &str, from: usize, match_case: bool) -> Option<(usize, usize)> {
+    let (t, n): (Vec<char>, Vec<char>) = (text.chars().collect(), needle.chars().collect());
+    if n.is_empty() {
         return None;
     }
-    let start = char_to_byte(text, from);
-    let b = text[start..].find(needle).map(|i| i + start).or_else(|| text.find(needle))?;
-    let a = text[..b].chars().count();
-    Some((a, a + needle.chars().count()))
+    let from = from.min(t.len());
+    (from..t.len()).chain(0..from).find(|&i| match_at(&t, i, &n, match_case)).map(|i| (i, i + n.len()))
+}
+
+/// None if there is nothing to replace.
+fn replace_all(text: &str, needle: &str, replacement: &str, match_case: bool) -> Option<String> {
+    let (t, n): (Vec<char>, Vec<char>) = (text.chars().collect(), needle.chars().collect());
+    if n.is_empty() {
+        return None;
+    }
+    let (mut out, mut i, mut hit) = (String::with_capacity(text.len()), 0, false);
+    while i < t.len() {
+        if match_at(&t, i, &n, match_case) {
+            out.push_str(replacement);
+            (i, hit) = (i + n.len(), true);
+        } else {
+            out.push(t[i]);
+            i += 1;
+        }
+    }
+    hit.then_some(out)
 }
 
 // ---------- App ----------
@@ -120,6 +147,7 @@ struct Notepad {
     find_open: bool,
     find_focus: bool,
     needle: String,
+    match_case: bool,
     replacement: String,
     not_found: bool,
     scroll_to: Option<usize>,
@@ -202,7 +230,7 @@ impl Notepad {
 
     fn find_next(&mut self, ctx: &egui::Context) {
         let from = Self::selection(ctx).map_or(0, |(_, b)| b);
-        let hit = find(&self.text, &self.needle, from);
+        let hit = find(&self.text, &self.needle, from, self.match_case);
         self.not_found = hit.is_none();
         if let Some((a, b)) = hit {
             self.select(ctx, a, b);
@@ -212,7 +240,7 @@ impl Notepad {
     fn replace(&mut self, ctx: &egui::Context) {
         if let Some((a, b)) = Self::selection(ctx) {
             let (ba, bb) = (char_to_byte(&self.text, a), char_to_byte(&self.text, b));
-            if a != b && self.text[ba..bb] == self.needle {
+            if a != b && find(&self.text[ba..bb], &self.needle, 0, self.match_case) == Some((0, b - a)) {
                 self.text.replace_range(ba..bb, &self.replacement);
                 self.dirty = true;
                 let end = a + self.replacement.chars().count();
@@ -223,9 +251,9 @@ impl Notepad {
     }
 
     fn replace_all(&mut self) {
-        if !self.needle.is_empty() && self.text.contains(&self.needle) {
-            self.text = self.text.replace(&self.needle, &self.replacement);
-            self.dirty = true;
+        match replace_all(&self.text, &self.needle, &self.replacement, self.match_case) {
+            Some(t) => (self.text, self.dirty, self.not_found) = (t, true, false),
+            None => self.not_found = true,
         }
     }
 
@@ -302,6 +330,7 @@ impl eframe::App for Notepad {
                     let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     ui.label("Replace:");
                     ui.text_edit_singleline(&mut self.replacement);
+                    if ui.checkbox(&mut self.match_case, "Match case").changed() { self.not_found = false; }
                     if ui.button("Find Next").clicked() || enter { self.find_next(&ctx); }
                     if ui.button("Replace").clicked() { self.replace(&ctx); }
                     if ui.button("Replace All").clicked() { self.replace_all(); }
@@ -392,10 +421,20 @@ mod tests {
 
     #[test]
     fn find_wraps_and_counts_chars() {
-        assert_eq!(find("äb äb", "äb", 0), Some((0, 2)));
-        assert_eq!(find("äb äb", "äb", 1), Some((3, 5)));
-        assert_eq!(find("äb äb", "äb", 4), Some((0, 2)));
-        assert_eq!(find("abc", "x", 0), None);
-        assert_eq!(find("abc", "", 0), None);
+        assert_eq!(find("äb äb", "äb", 0, true), Some((0, 2)));
+        assert_eq!(find("äb äb", "äb", 1, true), Some((3, 5)));
+        assert_eq!(find("äb äb", "äb", 4, true), Some((0, 2)));
+        assert_eq!(find("abc", "x", 0, true), None);
+        assert_eq!(find("abc", "", 0, true), None);
+    }
+
+    #[test]
+    fn case_insensitive() {
+        assert_eq!(find("Grüße GRÜN", "grü", 1, false), Some((6, 9)));
+        assert_eq!(find("Grüße GRÜN", "grü", 1, true), None);
+        assert_eq!(find("abc", "C", 0, false), Some((2, 3)));
+        assert_eq!(replace_all("Foo foo FOO", "foo", "x", false).as_deref(), Some("x x x"));
+        assert_eq!(replace_all("Foo foo FOO", "foo", "x", true).as_deref(), Some("Foo x FOO"));
+        assert_eq!(replace_all("abc", "x", "y", false), None);
     }
 }
