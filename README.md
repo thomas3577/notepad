@@ -118,4 +118,3 @@ The encoding used for saving can be changed in the **Encoding** menu. If the tex
 ## License
 
 [MIT](LICENSE)
-
