@@ -55,6 +55,9 @@ pub struct Notepad {
     theme: egui::ThemePreference,
     /// Selection kept while the right mouse button is down on it (egui would collapse it).
     right_click_sel: Option<CCursorRange>,
+    /// Editor selection as of the last frame it had focus. egui collapses the selection in
+    /// every frame the editor is unfocused, e.g. when a context menu item is clicked.
+    editor_sel: Option<CCursorRange>,
 }
 
 const MAX_RECENT: usize = 10;
@@ -797,6 +800,7 @@ impl eframe::App for Notepad {
 
         let (zoom, no_wrap) = (self.zoom, self.no_wrap);
         let right_click_sel = &mut self.right_click_sel;
+        let editor_sel = &mut self.editor_sel;
         let d = &mut self.docs[self.active];
         egui::CentralPanel::default().show(ui, |ui| {
             // per tab, so every tab keeps its own scroll position
@@ -868,9 +872,18 @@ impl eframe::App for Notepad {
                         ui.ctx().request_repaint(); // replace this frame's collapsed cursor right away
                     }
 
+                    if ui.memory(|m| m.has_focus(editor_id)) {
+                        *editor_sel = cursor_range;
+                    }
+
                     // Right-click menu. egui-winit turns these commands into the same Cut/Copy/Paste
                     // events as the keyboard shortcuts (next frame, to the focused editor; undo works).
-                    let has_sel = cursor_range.is_some_and(|r| r.primary != r.secondary);
+                    // Each item first puts the selection back and focuses the editor (see `editor_sel`).
+                    let has_sel = editor_sel.is_some_and(|r| r.primary != r.secondary);
+                    let refocus = |state: &mut egui::text_edit::TextEditState| {
+                        state.cursor.set_char_range(*editor_sel);
+                        ctx.memory_mut(|m| m.request_focus(editor_id));
+                    };
                     out.response.context_menu(|ui| {
                         use egui::ViewportCommand as V;
                         for (label, redo) in [("Undo (Ctrl+Z)", false), ("Redo (Ctrl+Y)", true)] {
@@ -878,6 +891,7 @@ impl eframe::App for Notepad {
                                 continue;
                             }
                             let mut state = out.state.clone();
+                            refocus(&mut state);
                             // ponytail: clones the undo history (up to UNDO_BUDGET_BYTES) once per click
                             let mut undoer = state.undoer();
                             let cur = (state.cursor.char_range().unwrap_or_default(), d.text.clone());
@@ -888,13 +902,14 @@ impl eframe::App for Notepad {
                             }
                             state.set_undoer(undoer);
                             state.store(&ctx, editor_id);
-                            ctx.memory_mut(|m| m.request_focus(editor_id));
                         }
                         ui.separator();
                         let items = [("Cut (Ctrl+X)", V::RequestCut, has_sel), ("Copy (Ctrl+C)", V::RequestCopy, has_sel), ("Paste (Ctrl+V)", V::RequestPaste, true)];
                         for (label, cmd, enabled) in items {
                             if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
-                                ctx.memory_mut(|m| m.request_focus(editor_id));
+                                let mut state = out.state.clone();
+                                refocus(&mut state);
+                                state.store(&ctx, editor_id);
                                 ctx.send_viewport_cmd(cmd);
                             }
                         }
@@ -997,5 +1012,47 @@ mod tests {
         let tabs: Vec<_> = restored.docs.iter().map(|d| (d.text.as_str(), d.dirty, d.path.is_some())).collect();
         assert_eq!(tabs, [("draft", true, false), ("new", true, true)]); // missing file skipped
         assert_eq!((restored.active, restored.zoom), (1, 1.5));
+    }
+
+    /// The context menu's Copy relies on this: after a click outside the editor (the menu
+    /// item) egui has collapsed the selection, so it is put back before the Copy event arrives.
+    #[test]
+    fn copy_after_click_elsewhere_needs_the_selection_restored() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("test-editor");
+        let mut text = String::from("hello world");
+        let hello = CCursorRange::two(CCursor::new(0), CCursor::new(5));
+        // one frame; `restore`: put the selection back and focus the editor (the menu item's job)
+        let frame = |text: &mut String, events: Vec<egui::Event>, restore: bool| {
+            let screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0)));
+            let mut out = ctx.run_ui(egui::RawInput { screen_rect, events, ..Default::default() }, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let out = egui::TextEdit::multiline(text).id(id).show(ui);
+                    if restore {
+                        let mut state = out.state;
+                        state.cursor.set_char_range(Some(hello));
+                        state.store(ui.ctx(), id);
+                        ui.memory_mut(|m| m.request_focus(id));
+                    }
+                });
+            });
+            out.textures_delta.clear();
+            out.platform_output.commands
+        };
+        frame(&mut text, vec![], false);
+        ctx.memory_mut(|m| m.request_focus(id));
+        frame(&mut text, vec![], true);
+
+        // click outside the editor, as on a menu item
+        let at = egui::pos2(790.0, 590.0);
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(&mut text, vec![egui::Event::PointerMoved(at), button(true)], false);
+        frame(&mut text, vec![button(false)], false);
+        let collapsed = egui::TextEdit::load_state(&ctx, id).unwrap().cursor.char_range().unwrap();
+        assert_eq!(collapsed.primary, collapsed.secondary, "egui collapses the selection (else this workaround is moot)");
+
+        frame(&mut text, vec![], true);
+        let commands = frame(&mut text, vec![egui::Event::Copy], false);
+        assert!(commands.contains(&egui::OutputCommand::CopyText("hello".into())), "{commands:?}");
     }
 }
