@@ -20,6 +20,8 @@ A simple text editor written in Rust, built with [egui/eframe](https://github.co
 - Line endings: CRLF and LF are detected and kept on save
 - Opens files via Explorer "Open with", the command line, or drag & drop onto the window or the exe;
   a file name that does not exist yet starts a new document saved under that name
+- Update check: when a newer release exists, the status bar shows "Update to vX.Y.Z"; one click
+  downloads and installs it, and Notepad restarts with all tabs
 - Warns when a file contains invalid bytes for its encoding, and before opening very large files
 
 ## Keyboard shortcuts

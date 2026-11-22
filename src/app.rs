@@ -6,6 +6,7 @@ use crate::doc::Doc;
 use crate::encoding::Enc;
 use crate::session::{self, SavedTab, Session};
 use crate::text::{char_to_byte, find, line_col, replace_all};
+use crate::update::{Status, Updater};
 use eframe::egui;
 use egui::text::{CCursor, CCursorRange};
 use std::path::PathBuf;
@@ -44,12 +45,18 @@ pub struct Notepad {
     /// Last written session, to skip writing an unchanged one.
     last_session: String,
     session_error_shown: bool,
+    updater: Option<Updater>,
 }
 
 impl Notepad {
     /// One empty tab. `restore` and `open` (e.g. from the command line) are loaded on the
     /// first frame; `incoming` delivers files from later starts.
-    pub fn new(open: Vec<PathBuf>, restore: Option<Session>, incoming: Option<Receiver<Vec<PathBuf>>>) -> Self {
+    pub fn new(
+        open: Vec<PathBuf>,
+        restore: Option<Session>,
+        incoming: Option<Receiver<Vec<PathBuf>>>,
+        updater: Option<Updater>,
+    ) -> Self {
         Notepad {
             docs: vec![Doc::new(0, None)],
             next_id: 1,
@@ -57,6 +64,7 @@ impl Notepad {
             pending_open: open,
             restore,
             incoming,
+            updater,
             ..Default::default()
         }
     }
@@ -568,6 +576,24 @@ impl eframe::App for Notepad {
                 ui.label(status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.weak(concat!("v", env!("CARGO_PKG_VERSION")));
+                    // right to left: these appear left of the version
+                    let Some(updater) = &self.updater else { return };
+                    match updater.status() {
+                        Status::UpToDate => {}
+                        Status::Available(v) => {
+                            let link = ui.link(format!("Update to v{v}"));
+                            if link.on_hover_text("Download and install; Notepad restarts with all tabs").clicked() {
+                                updater.install(v);
+                            }
+                        }
+                        Status::Downloading => {
+                            ui.weak("Updating...");
+                            ui.spinner();
+                        }
+                        Status::Failed(e) => {
+                            ui.colored_label(ui.visuals().warn_fg_color, "Update failed").on_hover_text(e);
+                        }
+                    }
                 });
             });
         });
@@ -691,7 +717,7 @@ mod tests {
     #[test]
     fn closing_tabs_keeps_a_sensible_active_tab() {
         let ctx = egui::Context::default();
-        let mut app = Notepad::new(vec![], None, None);
+        let mut app = Notepad::new(vec![], None, None, None);
         app.new_tab();
         app.new_tab(); // ids 0, 1, 2; active = 2
         let ids = |a: &Notepad| a.docs.iter().map(|d| d.id).collect::<Vec<_>>();
@@ -716,7 +742,7 @@ mod tests {
 
     #[test]
     fn session_keeps_unsaved_text() {
-        let mut app = Notepad::new(vec![], None, None); // tab 0: blank, not kept
+        let mut app = Notepad::new(vec![], None, None, None); // tab 0: blank, not kept
         app.new_tab(); // Untitled with text
         app.doc_mut().text = "draft".into();
         app.doc_mut().dirty = true;
@@ -732,7 +758,7 @@ mod tests {
         assert_eq!(texts, [Some("draft"), Some("new"), None]);
         assert_eq!(s.active, 1); // index among the kept tabs
 
-        let mut restored = Notepad::new(vec![], None, None);
+        let mut restored = Notepad::new(vec![], None, None, None);
         restored.restore_session(s, None);
         let tabs: Vec<_> = restored.docs.iter().map(|d| (d.text.as_str(), d.dirty, d.path.is_some())).collect();
         assert_eq!(tabs, [("draft", true, false), ("new", true, true)]); // missing file skipped

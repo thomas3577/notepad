@@ -9,6 +9,7 @@ mod files;
 mod instance;
 mod session;
 mod text;
+mod update;
 
 use eframe::egui;
 use std::path::PathBuf;
@@ -63,7 +64,8 @@ fn main() -> eframe::Result {
                 }
                 _ => None,
             };
-            Ok(Box::new(app::Notepad::new(files, session::load(), incoming)))
+            let updater = update::Updater::start(cc.egui_ctx.clone());
+            Ok(Box::new(app::Notepad::new(files, session::load(), incoming, Some(updater))))
         }),
     )
 }
