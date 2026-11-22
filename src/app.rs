@@ -325,6 +325,16 @@ impl Notepad {
                         let hover = d.path.as_ref().map_or("Untitled".into(), |p| p.display().to_string());
                         let resp = resp.on_hover_text(hover);
                         let close_resp = close_resp.on_hover_text("Close Tab (Ctrl+W)");
+                        resp.context_menu(|ui| {
+                            if let Some(path) = &d.path
+                                && ui.button("Reveal in File Explorer").clicked()
+                            {
+                                reveal_in_explorer(path);
+                            }
+                            if ui.button("Close Tab").clicked() {
+                                close = Some(i);
+                            }
+                        });
                         if close_resp.clicked() || resp.middle_clicked() || close_resp.middle_clicked() {
                             close = Some(i);
                         } else if resp.clicked() {
@@ -360,6 +370,16 @@ impl Notepad {
     fn title(&self) -> String {
         let d = self.doc();
         format!("{}{} - Notepad", if d.dirty { "*" } else { "" }, d.name())
+    }
+}
+
+/// Opens File Explorer with the file selected.
+fn reveal_in_explorer(path: &std::path::Path) {
+    use std::os::windows::process::CommandExt;
+    // raw_arg: Explorer parses `/select,"path"` itself and mishandles Rust's argument quoting.
+    let arg = format!("/select,\"{}\"", path.display());
+    if let Err(e) = std::process::Command::new("explorer.exe").raw_arg(arg).spawn() {
+        error(None, format!("Could not open File Explorer: {e}"));
     }
 }
 
@@ -475,6 +495,13 @@ impl eframe::App for Notepad {
 
         // No "discard changes?" on close: the session keeps them (eframe calls save() on exit).
 
+        // Menu bar above the tabs (panels stack in the order they are added)
+        if self.show_menu {
+            egui::Panel::top("menu").show(ui, |ui| {
+                egui::MenuBar::new().ui(ui, |ui| self.menus(ui, &ctx, p));
+            });
+        }
+
         // Tab strip a bit darker than the editor, so the active tab (editor color) stands out
         let strip = {
             let (c, f) = (ui.visuals().panel_fill, if ui.visuals().dark_mode { 0.72 } else { 0.92 });
@@ -484,12 +511,6 @@ impl eframe::App for Notepad {
             .frame(egui::Frame::NONE.fill(strip).inner_margin(egui::Margin { left: 6, right: 6, top: 5, bottom: 0 }))
             .show_separator_line(false)
             .show(ui, |ui| self.tab_bar(ui, &ctx, p));
-
-        if self.show_menu {
-            egui::Panel::top("menu").show(ui, |ui| {
-                egui::MenuBar::new().ui(ui, |ui| self.menus(ui, &ctx, p));
-            });
-        }
 
         if self.find_open {
             egui::Panel::top("find").show(ui, |ui| {
