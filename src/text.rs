@@ -12,6 +12,15 @@ pub fn line_col(text: &str, idx: usize) -> (usize, usize) {
     (line, col)
 }
 
+/// Char index of the start of 1-based `line`; past the last line: the start of the last line.
+pub fn line_start(text: &str, line: usize) -> usize {
+    let mut idx = 0;
+    for l in text.split('\n').take(line.max(1) - 1) {
+        idx += l.chars().count() + 1;
+    }
+    idx.min(text.chars().count() - text.rsplit('\n').next().unwrap_or("").chars().count())
+}
+
 // ponytail: per-char case folding, so "ß" never matches "SS"; good enough for a notepad.
 fn char_eq(a: char, b: char, match_case: bool) -> bool {
     a == b || (!match_case && a.to_lowercase().eq(b.to_lowercase()))
@@ -70,6 +79,16 @@ mod tests {
         assert_eq!(line_col("ab\ncäd", 3), (2, 1));
         assert_eq!(line_col("ab\ncäd", 5), (2, 3));
         assert_eq!(line_col("ab\n", 3), (2, 1));
+    }
+
+    #[test]
+    fn start_of_line() {
+        assert_eq!(line_start("ab\ncäd\nx", 1), 0);
+        assert_eq!(line_start("ab\ncäd\nx", 2), 3);
+        assert_eq!(line_start("ab\ncäd\nx", 3), 7);
+        assert_eq!(line_start("ab\ncäd\nx", 99), 7);
+        assert_eq!(line_start("ab\n", 2), 3);
+        assert_eq!(line_start("", 0), 0);
     }
 
     #[test]

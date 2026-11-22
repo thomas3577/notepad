@@ -7,12 +7,18 @@ A simple text editor written in Rust, built with [egui/eframe](https://github.co
 ## Features
 
 - Minimal UI: the menu bar is hidden; press Alt to show it, or use the ☰ button in the status bar
-- Tabs: open several files at once (Ctrl+N new tab, Ctrl+W close, Ctrl+Tab switch, middle-click closes)
+- Tabs: open several files at once (Ctrl+N new tab, Ctrl+W close, Ctrl+Tab switch, middle-click closes);
+  right-click a tab for Copy Path, Reveal in File Explorer, Close Tab, Close Other Tabs
 - Session restore, like Windows Notepad: closing the window keeps all tabs, including unsaved changes and Untitled tabs, and the next start brings them back (also window size, zoom, word wrap)
 - One window: starting Notepad again (e.g. Explorer "Open with") opens the file as a new tab in the running Notepad
-- New, Open, Save, Save As; saving is crash-safe (temp file + rename)
+- New, Open, Save, Save As, Save All; saving is crash-safe (temp file + rename)
+- Recent files (File menu)
+- Files changed by another program are reloaded when you switch back to Notepad; a tab with
+  unsaved changes asks first
 - Line numbers (correct with word wrap)
 - Word wrap on/off (View menu)
+- Theme: System, Light or Dark (View menu)
+- Go to line (Ctrl+G)
 - Text zoom (Ctrl+Plus/Minus/0, Ctrl+mouse wheel)
 - Status bar: line, column, zoom, encoding, line ending
 - Right-click menu in the editor: Undo, Redo, Cut, Copy, Paste, Select All
@@ -36,8 +42,10 @@ A simple text editor written in Rust, built with [egui/eframe](https://github.co
 | Ctrl+O         | Open             |
 | Ctrl+S         | Save             |
 | Ctrl+Shift+S   | Save As          |
+| Ctrl+Alt+S     | Save All         |
 | Ctrl+F, Ctrl+H | Find/Replace     |
 | F3             | Find Next        |
+| Ctrl+G         | Go to line       |
 | Esc            | Close search bar |
 | Ctrl+Plus      | Zoom in          |
 | Ctrl+Minus     | Zoom out         |

@@ -5,7 +5,8 @@ use crate::encoding::Enc;
 use crate::files::write_atomic;
 use eframe::egui;
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// egui keeps far more memory per character than the file needs (layout data for every glyph).
 /// Measured: a 5.6 MB file needs about 1.3 GB.
@@ -28,6 +29,13 @@ pub struct Doc {
     pub reset_editor: bool,
     /// Char index to scroll into view on the next frame (find).
     pub scroll_to: Option<usize>,
+    /// File's modification time when loaded or saved, to notice changes by other programs.
+    pub mtime: Option<SystemTime>,
+}
+
+/// None if the file does not exist (or can't be read).
+pub fn mtime(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 impl Doc {
@@ -42,6 +50,7 @@ impl Doc {
             crlf: NEW_DOC_CRLF,
             reset_editor: true,
             scroll_to: None,
+            mtime: None,
         }
     }
 
@@ -86,7 +95,7 @@ impl Doc {
         // no line break at all: use the platform default, so the first Enter matches it
         let crlf = if text.contains('\n') { text.contains("\r\n") } else { NEW_DOC_CRLF };
         let text = if crlf { text.replace("\r\n", "\n") } else { text };
-        Some(Doc { text, enc, crlf, ..Doc::new(id, Some(path)) })
+        Some(Doc { text, enc, crlf, mtime: meta.modified().ok(), ..Doc::new(id, Some(path)) })
     }
 
     /// true if the file was written.
@@ -126,6 +135,7 @@ impl Doc {
         match write_atomic(&path, &bytes) {
             // only now: a failed save must not silently change the encoding
             Ok(()) => {
+                self.mtime = mtime(&path);
                 (self.path, self.dirty, self.enc) = (Some(path), false, enc);
                 true
             }

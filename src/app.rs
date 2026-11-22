@@ -1,15 +1,15 @@
 //! The Notepad window: tabs, menus, find bar, editor, status bar.
 
 use crate::alt_tap::AltTap;
-use crate::dialogs::{Parent, ask_yes_no_cancel, error, file_dialog};
-use crate::doc::Doc;
+use crate::dialogs::{Parent, ask, ask_yes_no_cancel, error, file_dialog};
+use crate::doc::{self, Doc};
 use crate::encoding::Enc;
 use crate::session::{self, SavedTab, Session};
-use crate::text::{char_to_byte, find, line_col, replace_all};
+use crate::text::{char_to_byte, find, line_col, line_start, replace_all};
 use crate::update::{Status, Updater};
 use eframe::egui;
 use egui::text::{CCursor, CCursorRange};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
 /// Upper bound for egui's undo history, which stores a full copy of the text per step.
@@ -46,7 +46,16 @@ pub struct Notepad {
     last_session: String,
     session_error_shown: bool,
     updater: Option<Updater>,
+    /// Window had focus last frame; regaining it checks for files changed by other programs.
+    was_focused: bool,
+    /// Go to Line dialog is open, with what was typed.
+    goto: Option<String>,
+    /// Recently opened or saved files, most recent first.
+    recent: Vec<PathBuf>,
+    theme: egui::ThemePreference,
 }
+
+const MAX_RECENT: usize = 10;
 
 impl Notepad {
     /// One empty tab. `restore` and `open` (e.g. from the command line) are loaded on the
@@ -87,6 +96,8 @@ impl Notepad {
             active: self.docs[..self.active].iter().filter(keep).count(),
             zoom: self.zoom,
             no_wrap: self.no_wrap,
+            recent: self.recent.clone(),
+            theme: self.theme,
         }
     }
 
@@ -96,7 +107,9 @@ impl Notepad {
             let id = self.take_id();
             let doc = match (tab.text, tab.path) {
                 (Some(text), path) => {
-                    Some(Doc { text, enc: tab.enc, crlf: tab.crlf, dirty: true, ..Doc::new(id, path) })
+                    // ponytail: changes to the file while Notepad was closed go unnoticed (store mtime if that matters)
+                    let mtime = path.as_deref().and_then(doc::mtime);
+                    Some(Doc { text, enc: tab.enc, crlf: tab.crlf, dirty: true, mtime, ..Doc::new(id, path) })
                 }
                 // unchanged file: read it again (it may have changed); skip it if it is gone
                 (None, Some(path)) if path.exists() => Doc::load(id, path, p),
@@ -109,6 +122,7 @@ impl Notepad {
             self.docs = docs;
         }
         (self.zoom, self.no_wrap) = (if s.zoom > 0.0 { s.zoom } else { 1.0 }, s.no_wrap);
+        (self.recent, self.theme) = (s.recent, s.theme);
     }
 
     fn doc(&self) -> &Doc {
@@ -135,10 +149,12 @@ impl Notepad {
     fn open_path(&mut self, path: PathBuf, p: Parent) {
         if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
             self.active = i;
+            self.add_recent(&path);
             return;
         }
         let id = self.take_id();
-        if let Some(doc) = Doc::load(id, path, p) {
+        if let Some(doc) = Doc::load(id, path.clone(), p) {
+            self.add_recent(&path);
             if self.doc().is_blank() {
                 *self.doc_mut() = doc;
             } else {
@@ -154,18 +170,68 @@ impl Notepad {
         }
     }
 
+    fn add_recent(&mut self, path: &Path) {
+        self.recent.retain(|r| r != path);
+        self.recent.insert(0, path.to_path_buf());
+        self.recent.truncate(MAX_RECENT);
+    }
+
+    /// true if the file was written.
+    fn save_doc(&mut self, i: usize, save_as: bool, p: Parent) -> bool {
+        let saved = self.docs[i].save(save_as, p);
+        if let Some(path) = self.docs[i].path.clone().filter(|_| saved) {
+            self.add_recent(&path);
+        }
+        saved
+    }
+
     fn save(&mut self, save_as: bool, p: Parent) {
-        self.doc_mut().save(save_as, p);
+        self.save_doc(self.active, save_as, p);
+    }
+
+    /// Saves every changed tab; stops when a save is cancelled or fails.
+    fn save_all(&mut self, p: Parent) {
+        for i in 0..self.docs.len() {
+            if !self.docs[i].dirty {
+                continue;
+            }
+            if self.docs[i].path.is_none() {
+                self.active = i; // the Save As dialog is for this tab
+            }
+            if !self.save_doc(i, false, p) {
+                return;
+            }
+        }
+    }
+
+    /// Files changed by another program: unchanged tabs are reloaded, changed ones only
+    /// after asking (once per change).
+    fn check_external_changes(&mut self, p: Parent) {
+        for d in &mut self.docs {
+            let Some(path) = d.path.clone() else { continue };
+            let now = doc::mtime(&path);
+            if now.is_none() || now == d.mtime {
+                continue; // unchanged, or deleted: keep the text, saving writes it again
+            }
+            d.mtime = now;
+            if d.dirty && !ask(p, &format!("{} was changed by another program.\nReload it and lose your changes?", d.name())) {
+                continue;
+            }
+            if let Some(new) = Doc::load(d.id, path, p) {
+                *d = new;
+            }
+        }
     }
 
     /// Asks to save a changed tab first; the last tab is replaced by an empty one.
-    fn close_tab(&mut self, i: usize, ctx: &egui::Context, p: Parent) {
+    /// false if the user cancelled.
+    fn close_tab(&mut self, i: usize, ctx: &egui::Context, p: Parent) -> bool {
         let d = &mut self.docs[i];
         if d.dirty {
             match ask_yes_no_cancel(p, &format!("Save changes to {}?", d.name())) {
                 Some(true) if d.save(false, p) => {}
                 Some(false) => {}
-                _ => return,
+                _ => return false,
             }
         }
         // drop egui's state for this editor (its undo history holds copies of the text)
@@ -176,6 +242,26 @@ impl Notepad {
         } else if self.active > i || self.active == self.docs.len() {
             self.active -= 1;
         }
+        true
+    }
+
+    /// Closes all tabs but `keep`; stops when the user cancels.
+    fn close_other_tabs(&mut self, keep: usize, ctx: &egui::Context, p: Parent) {
+        let keep_id = self.docs[keep].id;
+        let others: Vec<u64> = self.docs.iter().map(|d| d.id).filter(|&id| id != keep_id).collect();
+        for id in others {
+            let i = self.docs.iter().position(|d| d.id == id).expect("still open");
+            if !self.close_tab(i, ctx, p) {
+                break;
+            }
+        }
+        self.active = self.docs.iter().position(|d| d.id == keep_id).expect("never closed");
+    }
+
+    fn go_to_line(&mut self, ctx: &egui::Context, line: usize) {
+        let a = line_start(&self.doc().text, line);
+        self.select(ctx, a, a);
+        self.focused_doc = None; // focus the editor again
     }
 
     fn next_tab(&mut self, step: isize) {
@@ -242,6 +328,28 @@ impl Notepad {
             if ui.button("Open… (Ctrl+O)").clicked() { self.open(p); }
             if ui.button("Save (Ctrl+S)").clicked() { self.save(false, p); }
             if ui.button("Save As… (Ctrl+Shift+S)").clicked() { self.save(true, p); }
+            if ui.button("Save All (Ctrl+Alt+S)").clicked() { self.save_all(p); }
+            ui.separator();
+            ui.menu_button("Recent Files", |ui| {
+                let mut open = None;
+                for path in &self.recent {
+                    if ui.button(path.display().to_string()).clicked() { open = Some(path.clone()); }
+                }
+                if self.recent.is_empty() {
+                    ui.weak("No recent files");
+                } else {
+                    ui.separator();
+                    if ui.button("Clear List").clicked() { self.recent.clear(); }
+                }
+                if let Some(path) = open {
+                    if path.is_file() {
+                        self.open_path(path, p);
+                    } else {
+                        self.recent.retain(|r| *r != path);
+                        error(p, format!("File not found: {}", path.display()));
+                    }
+                }
+            });
             ui.separator();
             if ui.button("Close Tab (Ctrl+W)").clicked() { self.close_tab(self.active, ctx, p); }
         });
@@ -250,6 +358,7 @@ impl Notepad {
                 (self.find_open, self.find_focus) = (true, true);
             }
             if ui.button("Find Next (F3)").clicked() { self.find_next(ctx); }
+            if ui.button("Go to Line… (Ctrl+G)").clicked() { self.goto = Some(String::new()); }
         });
         ui.menu_button("View", |ui| {
             ui.checkbox(&mut self.show_menu, "Show Menu Bar (Alt)");
@@ -259,6 +368,13 @@ impl Notepad {
             if ui.button("Zoom In (Ctrl+Plus)").clicked() { self.zoom += 0.1; }
             if ui.button("Zoom Out (Ctrl+Minus)").clicked() { self.zoom -= 0.1; }
             if ui.button("Reset Zoom (Ctrl+0)").clicked() { self.zoom = 1.0; }
+            ui.separator();
+            ui.menu_button("Theme", |ui| {
+                use egui::ThemePreference as T;
+                for (theme, name) in [(T::System, "System"), (T::Light, "Light"), (T::Dark, "Dark")] {
+                    ui.radio_value(&mut self.theme, theme, name);
+                }
+            });
         });
         ui.menu_button("Encoding", |ui| {
             let d = self.doc_mut();
@@ -280,7 +396,8 @@ impl Notepad {
     fn tab_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, p: Parent) {
         use egui::{Color32, CornerRadius, Rect, Role, Sense, Stroke, WidgetInfo, pos2, vec2};
         const H: f32 = 32.0;
-        let (mut switch_to, mut close, mut add) = (None, None, false);
+        let (mut switch_to, mut close, mut close_others, mut add) = (None, None, None, false);
+        let several = self.docs.len() > 1;
         let v = ui.visuals().clone();
         let font = egui::TextStyle::Body.resolve(ui.style());
         let cross = |painter: &egui::Painter, c: egui::Pos2, color: Color32| {
@@ -334,13 +451,20 @@ impl Notepad {
                         let resp = resp.on_hover_text(hover);
                         let close_resp = close_resp.on_hover_text("Close Tab (Ctrl+W)");
                         resp.context_menu(|ui| {
-                            if let Some(path) = &d.path
-                                && ui.button("Reveal in File Explorer").clicked()
-                            {
-                                reveal_in_explorer(path);
+                            if let Some(path) = &d.path {
+                                if ui.button("Copy Path").clicked() {
+                                    ui.ctx().copy_text(path.display().to_string());
+                                }
+                                if ui.button("Reveal in File Explorer").clicked() {
+                                    reveal_in_explorer(path);
+                                }
+                                ui.separator();
                             }
                             if ui.button("Close Tab").clicked() {
                                 close = Some(i);
+                            }
+                            if ui.add_enabled(several, egui::Button::new("Close Other Tabs")).clicked() {
+                                close_others = Some(i);
                             }
                         });
                         if close_resp.clicked() || resp.middle_clicked() || close_resp.middle_clicked() {
@@ -367,6 +491,8 @@ impl Notepad {
             });
         if let Some(i) = close {
             self.close_tab(i, ctx, p);
+        } else if let Some(i) = close_others {
+            self.close_other_tabs(i, ctx, p);
         } else if let Some(i) = switch_to {
             self.active = i;
         }
@@ -439,12 +565,24 @@ impl eframe::App for Notepad {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
 
-        // Esc closes the find bar, else the menu bar; otherwise menus and popups need it
-        let esc_ours = self.find_open || self.show_menu;
-        let [save_as, prev_tab, n, t, o, s, w, next_tab, f, h, f3, esc, plus, equals, minus, zero] = ctx.input_mut(|i| {
+        // Back from another program: reload files it changed
+        let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        if focused && !self.was_focused {
+            self.check_external_changes(p);
+        }
+        self.was_focused = focused;
+
+        if ctx.options(|o| o.theme_preference) != self.theme {
+            ctx.set_theme(self.theme);
+        }
+
+        // Esc closes Go to Line, else the find bar, else the menu bar; otherwise menus and popups need it
+        let esc_ours = self.goto.is_some() || self.find_open || self.show_menu;
+        let [save_all, save_as, prev_tab, n, t, o, s, w, next_tab, f, h, g, f3, esc, plus, equals, minus, zero] = ctx.input_mut(|i| {
             use egui::{Key, KeyboardShortcut as K, Modifiers as M};
             [
-                // Shift variants first: egui's Ctrl+X would also match Ctrl+Shift+X
+                // Shift/Alt variants first: egui's Ctrl+X would also match Ctrl+Shift+X
+                K::new(M::COMMAND | M::ALT, Key::S),
                 K::new(M::COMMAND | M::SHIFT, Key::S),
                 K::new(M::COMMAND | M::SHIFT, Key::Tab),
                 K::new(M::COMMAND, Key::N),
@@ -455,6 +593,7 @@ impl eframe::App for Notepad {
                 K::new(M::COMMAND, Key::Tab),
                 K::new(M::COMMAND, Key::F),
                 K::new(M::COMMAND, Key::H),
+                K::new(M::COMMAND, Key::G),
                 K::new(M::NONE, Key::F3),
                 if esc_ours { K::new(M::NONE, Key::Escape) } else { K::new(M::NONE, Key::F24) },
                 K::new(M::COMMAND, Key::Plus),
@@ -464,6 +603,7 @@ impl eframe::App for Notepad {
             ]
             .map(|k| i.consume_shortcut(&k))
         });
+        if save_all { self.save_all(p); }
         if save_as { self.save(true, p); }
         if n || t { self.new_tab(); }
         if o { self.open(p); }
@@ -473,7 +613,11 @@ impl eframe::App for Notepad {
         if prev_tab { self.next_tab(-1); }
         if f || h { (self.find_open, self.find_focus) = (true, true); }
         if f3 { self.find_next(&ctx); }
-        if esc && self.find_open {
+        if g { self.goto = Some(String::new()); }
+        if esc && self.goto.is_some() {
+            self.goto = None;
+            self.focused_doc = None;
+        } else if esc && self.find_open {
             self.find_open = false;
             self.focused_doc = None; // give the editor its focus back
         } else if esc {
@@ -543,6 +687,27 @@ impl eframe::App for Notepad {
                     }
                 });
             });
+        }
+
+        if let Some(input) = &mut self.goto {
+            let (mut go, mut close) = (false, false);
+            let modal = egui::Modal::new(egui::Id::unique("goto")).show(&ctx, |ui| {
+                ui.label("Go to line:");
+                ui.text_edit_singleline(input).request_focus();
+                go = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.horizontal(|ui| {
+                    go |= ui.button("Go").clicked();
+                    close = ui.button("Cancel").clicked();
+                });
+            });
+            let line = input.trim().parse::<usize>().ok().filter(|_| go);
+            if go || close || modal.should_close() {
+                self.goto = None;
+                self.focused_doc = None;
+            }
+            if let Some(line) = line {
+                self.go_to_line(&ctx, line);
+            }
         }
 
         self.zoom = self.zoom.clamp(0.5, 4.0);

@@ -14,6 +14,11 @@ pub struct Session {
     pub active: usize,
     pub zoom: f32,
     pub no_wrap: bool,
+    /// Most recent first. (serde default: sessions from older versions lack the newer fields)
+    #[serde(default)]
+    pub recent: Vec<PathBuf>,
+    #[serde(default)]
+    pub theme: eframe::egui::ThemePreference,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -64,7 +69,15 @@ mod tests {
             active: 1,
             zoom: 1.5,
             no_wrap: true,
+            recent: vec![r"C:\b.txt".into()],
+            theme: eframe::egui::ThemePreference::Dark,
         };
         assert_eq!(ron::from_str::<Session>(&to_string(&s)).unwrap(), s);
+    }
+
+    #[test]
+    fn reads_session_of_older_version() {
+        let s: Session = ron::from_str("(tabs:[],active:0,zoom:1.0,no_wrap:false)").unwrap();
+        assert!(s.recent.is_empty());
     }
 }
