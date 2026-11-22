@@ -53,6 +53,8 @@ pub struct Notepad {
     /// Recently opened or saved files, most recent first.
     recent: Vec<PathBuf>,
     theme: egui::ThemePreference,
+    /// Selection kept while the right mouse button is down on it (egui would collapse it).
+    right_click_sel: Option<CCursorRange>,
 }
 
 const MAX_RECENT: usize = 10;
@@ -794,6 +796,7 @@ impl eframe::App for Notepad {
             .map(|(a, b)| (char_to_byte(&self.doc().text, a), char_to_byte(&self.doc().text, b)));
 
         let (zoom, no_wrap) = (self.zoom, self.no_wrap);
+        let right_click_sel = &mut self.right_click_sel;
         let d = &mut self.docs[self.active];
         egui::CentralPanel::default().show(ui, |ui| {
             // per tab, so every tab keeps its own scroll position
@@ -830,6 +833,7 @@ impl eframe::App for Notepad {
                         ui.ctx().fonts_mut(|f| f.layout_job(job))
                     };
 
+                    let before = egui::TextEdit::load_state(ui.ctx(), editor_id).and_then(|s| s.cursor.char_range());
                     let out = egui::TextEdit::multiline(&mut d.text)
                         .id(editor_id)
                         .layouter(&mut layouter)
@@ -839,9 +843,34 @@ impl eframe::App for Notepad {
                         .show(ui);
                     if out.response.changed() { d.dirty = true; }
 
+                    // egui moves the cursor on any mouse button. Like Windows, a right-click inside the
+                    // selection keeps it (restored while the button is down); elsewhere it moves the cursor.
+                    let (pressed, down) = ui.input(|i| {
+                        let b = egui::PointerButton::Secondary;
+                        (i.pointer.button_pressed(b), i.pointer.button_down(b) || i.pointer.button_released(b))
+                    });
+                    if pressed {
+                        *right_click_sel = before.filter(|old| {
+                            let (a, b) = (old.primary.index.min(old.secondary.index), old.primary.index.max(old.secondary.index));
+                            a != b && out.cursor_range.is_some_and(|new| (a..=b).contains(&new.primary.index))
+                        });
+                    } else if !down {
+                        *right_click_sel = None;
+                    }
+                    let mut cursor_range = out.cursor_range;
+                    if let Some(sel) = *right_click_sel
+                        && out.cursor_range != Some(sel)
+                    {
+                        let mut state = out.state.clone();
+                        state.cursor.set_char_range(Some(sel));
+                        state.store(ui.ctx(), editor_id);
+                        cursor_range = Some(sel);
+                        ui.ctx().request_repaint(); // replace this frame's collapsed cursor right away
+                    }
+
                     // Right-click menu. egui-winit turns these commands into the same Cut/Copy/Paste
                     // events as the keyboard shortcuts (next frame, to the focused editor; undo works).
-                    let has_sel = out.cursor_range.is_some_and(|r| r.primary != r.secondary);
+                    let has_sel = cursor_range.is_some_and(|r| r.primary != r.secondary);
                     out.response.context_menu(|ui| {
                         use egui::ViewportCommand as V;
                         for (label, redo) in [("Undo (Ctrl+Z)", false), ("Redo (Ctrl+Y)", true)] {
