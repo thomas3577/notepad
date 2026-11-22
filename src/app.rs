@@ -674,6 +674,46 @@ impl eframe::App for Notepad {
                         .show(ui);
                     if out.response.changed() { d.dirty = true; }
 
+                    // Right-click menu. egui-winit turns these commands into the same Cut/Copy/Paste
+                    // events as the keyboard shortcuts (next frame, to the focused editor; undo works).
+                    let has_sel = out.cursor_range.is_some_and(|r| r.primary != r.secondary);
+                    out.response.context_menu(|ui| {
+                        use egui::ViewportCommand as V;
+                        for (label, redo) in [("Undo (Ctrl+Z)", false), ("Redo (Ctrl+Y)", true)] {
+                            if !ui.button(label).clicked() {
+                                continue;
+                            }
+                            let mut state = out.state.clone();
+                            // ponytail: clones the undo history (up to UNDO_BUDGET_BYTES) once per click
+                            let mut undoer = state.undoer();
+                            let cur = (state.cursor.char_range().unwrap_or_default(), d.text.clone());
+                            let step = if redo { undoer.redo(&cur) } else { undoer.undo(&cur) };
+                            if let Some((range, text)) = step {
+                                (d.text, d.dirty) = (text.clone(), true);
+                                state.cursor.set_char_range(Some(*range));
+                            }
+                            state.set_undoer(undoer);
+                            state.store(&ctx, editor_id);
+                            ctx.memory_mut(|m| m.request_focus(editor_id));
+                        }
+                        ui.separator();
+                        let items = [("Cut (Ctrl+X)", V::RequestCut, has_sel), ("Copy (Ctrl+C)", V::RequestCopy, has_sel), ("Paste (Ctrl+V)", V::RequestPaste, true)];
+                        for (label, cmd, enabled) in items {
+                            if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                                ctx.memory_mut(|m| m.request_focus(editor_id));
+                                ctx.send_viewport_cmd(cmd);
+                            }
+                        }
+                        ui.separator();
+                        if ui.button("Select All (Ctrl+A)").clicked() {
+                            let mut state = out.state.clone();
+                            let all = CCursorRange::two(CCursor::new(0), CCursor::new(d.text.chars().count()));
+                            state.cursor.set_char_range(Some(all));
+                            state.store(&ctx, editor_id);
+                            ctx.memory_mut(|m| m.request_focus(editor_id));
+                        }
+                    });
+
                     // Line numbers: one per logical line, at the first wrapped row of that line.
                     // Only rows inside the visible area are painted (large files).
                     let clip = ui.clip_rect();

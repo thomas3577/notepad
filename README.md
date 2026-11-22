@@ -15,6 +15,7 @@ A simple text editor written in Rust, built with [egui/eframe](https://github.co
 - Word wrap on/off (View menu)
 - Text zoom (Ctrl+Plus/Minus/0, Ctrl+mouse wheel)
 - Status bar: line, column, zoom, encoding, line ending
+- Right-click menu in the editor: Undo, Redo, Cut, Copy, Paste, Select All
 - Find & Replace (Find Next, Replace, Replace All), case-insensitive by default ("Match case" option)
 - Encodings: UTF-8, UTF-8 with BOM, UTF-16 LE/BE, ANSI (Windows-1252)
 - Line endings: CRLF and LF are detected and kept on save
