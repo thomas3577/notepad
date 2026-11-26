@@ -742,7 +742,9 @@ impl eframe::App for Notepad {
                 let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::click());
                 resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Menu"));
                 let v = ui.style().interact(&resp);
-                ui.painter().rect_filled(rect, 3.0, v.weak_bg_fill);
+                if resp.hovered() {
+                    ui.painter().rect_filled(rect, 3.0, v.weak_bg_fill);
+                }
                 for dy in [-4.0, 0.0, 4.0] {
                     let y = rect.center().y + dy;
                     let x = rect.center().x;
