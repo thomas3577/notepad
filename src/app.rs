@@ -957,6 +957,13 @@ impl eframe::App for Notepad {
             });
         });
 
+        // An Untitled tab emptied again has nothing to save
+        for d in &mut self.docs {
+            if d.path.is_none() && d.text.is_empty() {
+                d.dirty = false;
+            }
+        }
+
         // Only on change: every viewport command triggers a repaint, which would loop forever.
         let title = self.title();
         if title != self.last_title {
