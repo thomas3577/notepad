@@ -385,16 +385,22 @@ impl Notepad {
         });
         ui.menu_button("Encoding", |ui| {
             let d = self.doc_mut();
-            for e in Enc::ALL {
-                if ui.radio_value(&mut d.enc, e, e.name()).changed() { d.dirty = true; }
-            }
+            enc_menu(ui, d);
             ui.separator();
-            if ui.radio_value(&mut d.crlf, true, "Windows (CRLF)").changed()
-                | ui.radio_value(&mut d.crlf, false, "Unix (LF)").changed()
-            {
-                d.dirty = true;
-            }
+            eol_menu(ui, d);
         });
+    }
+
+    /// Zoom presets plus in/out/reset, shared by the status bar dropdown.
+    fn zoom_menu(&mut self, ui: &mut egui::Ui) {
+        for pct in [50, 75, 100, 125, 150, 200, 300, 400] {
+            let z = pct as f32 / 100.0;
+            if ui.radio((self.zoom - z).abs() < 0.005, format!("{pct}%")).clicked() { self.zoom = z; }
+        }
+        ui.separator();
+        if ui.button("Zoom In (Ctrl+Plus)").clicked() { self.zoom += 0.1; }
+        if ui.button("Zoom Out (Ctrl+Minus)").clicked() { self.zoom -= 0.1; }
+        if ui.button("Reset Zoom (Ctrl+0)").clicked() { self.zoom = 1.0; }
     }
 
     /// Tabs like Windows 11 Notepad: the active tab has the editor's color and merges into it;
@@ -403,7 +409,7 @@ impl Notepad {
     fn tab_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, p: Parent) {
         use egui::{Color32, CornerRadius, Rect, Role, Sense, Stroke, WidgetInfo, pos2, vec2};
         const H: f32 = 32.0;
-        let (mut switch_to, mut close, mut close_others, mut add) = (None, None, None, false);
+        let (mut switch_to, mut close, mut close_others, mut save_as, mut add) = (None, None, None, None, false);
         let several = self.docs.len() > 1;
         let v = ui.visuals().clone();
         let font = egui::TextStyle::Body.resolve(ui.style());
@@ -467,6 +473,10 @@ impl Notepad {
                                 }
                                 ui.separator();
                             }
+                            if ui.button("Save As…").clicked() {
+                                save_as = Some(i);
+                            }
+                            ui.separator();
                             if ui.button("Close Tab").clicked() {
                                 close = Some(i);
                             }
@@ -500,6 +510,9 @@ impl Notepad {
             self.close_tab(i, ctx, p);
         } else if let Some(i) = close_others {
             self.close_other_tabs(i, ctx, p);
+        } else if let Some(i) = save_as {
+            self.active = i; // the Save As dialog is for this tab
+            self.save(true, p);
         } else if let Some(i) = switch_to {
             self.active = i;
         }
@@ -515,6 +528,20 @@ impl Notepad {
 }
 
 /// Opens File Explorer with the file selected.
+fn enc_menu(ui: &mut egui::Ui, d: &mut Doc) {
+    for e in Enc::ALL {
+        if ui.radio_value(&mut d.enc, e, e.name()).changed() { d.dirty = true; }
+    }
+}
+
+fn eol_menu(ui: &mut egui::Ui, d: &mut Doc) {
+    if ui.radio_value(&mut d.crlf, true, "Windows (CRLF)").changed()
+        | ui.radio_value(&mut d.crlf, false, "Unix (LF)").changed()
+    {
+        d.dirty = true;
+    }
+}
+
 fn reveal_in_explorer(path: &std::path::Path) {
     use std::os::windows::process::CommandExt;
     // raw_arg: Explorer parses `/select,"path"` itself and mishandles Rust's argument quoting.
@@ -730,12 +757,14 @@ impl eframe::App for Notepad {
                 .map_or(0, |r| r.primary.index.into());
             let d = self.doc();
             let (ln, col) = line_col(&d.text, cursor);
-            let status = format!(
-                "Ln {ln}, Col {col}  |  {:.0}%  |  {}  |  {}",
-                self.zoom * 100.0,
-                d.enc.name(),
-                if d.crlf { "CRLF" } else { "LF" }
-            );
+            let (zoom_text, enc_text) = (format!("{:.0}%", self.zoom * 100.0), d.enc.name());
+            let eol_text = if d.crlf { "CRLF" } else { "LF" };
+            // Flat button that opens a dropdown; background only on hover, like the ☰ button.
+            let dropdown = |ui: &mut egui::Ui, text: &str, f: &mut dyn FnMut(&mut egui::Ui)| {
+                ui.label("|");
+                let button = egui::Button::new(text).frame_when_inactive(false);
+                egui::menu::MenuButton::from_button(button).ui(ui, |ui| f(ui));
+            };
             ui.horizontal(|ui| {
                 // Same menus as the menu bar, as a popup with submenus. The ☰ icon is painted:
                 // egui's default fonts don't contain the ☰ glyph.
@@ -752,7 +781,10 @@ impl eframe::App for Notepad {
                 }
                 let resp = resp.on_hover_text("Menu (Alt)");
                 egui::Popup::menu(&resp).show(|ui| self.menus(ui, &ctx, p));
-                ui.label(status);
+                ui.label(format!("Ln {ln}, Col {col}"));
+                dropdown(ui, &zoom_text, &mut |ui| self.zoom_menu(ui));
+                dropdown(ui, enc_text, &mut |ui| enc_menu(ui, self.doc_mut()));
+                dropdown(ui, eol_text, &mut |ui| eol_menu(ui, self.doc_mut()));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.weak(concat!("v", env!("CARGO_PKG_VERSION")));
                     // right to left: these appear left of the version
