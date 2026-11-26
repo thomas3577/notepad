@@ -769,8 +769,11 @@ impl eframe::App for Notepad {
                             ui.weak("Updating...");
                             ui.spinner();
                         }
-                        Status::Failed(e) => {
-                            ui.colored_label(ui.visuals().warn_fg_color, "Update failed").on_hover_text(e);
+                        Status::Failed(v, e) => {
+                            let text = egui::RichText::new("Update failed, retry").color(ui.visuals().warn_fg_color);
+                            if ui.link(text).on_hover_text(e).clicked() {
+                                updater.install(v);
+                            }
                         }
                     }
                 });

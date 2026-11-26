@@ -14,7 +14,8 @@ pub enum Status {
     UpToDate,
     Available(String),
     Downloading,
-    Failed(String),
+    /// Version and error.
+    Failed(String, String),
 }
 
 #[derive(Clone)]
@@ -24,13 +25,19 @@ pub struct Updater {
 }
 
 impl Updater {
-    /// Checks for a newer release in the background; the status bar shows the result.
+    /// Checks for a newer release in the background, hourly until one is found; the
+    /// status bar shows the result.
     pub fn start(ctx: egui::Context) -> Self {
         let u = Updater { status: Default::default(), ctx };
         let bg = u.clone();
         std::thread::spawn(move || {
-            if let Some(v) = latest().filter(|v| newer(v, env!("CARGO_PKG_VERSION"))) {
-                bg.set(Status::Available(v));
+            loop {
+                // a release is published before its MSI is built and attached
+                if let Some(v) = latest().filter(|v| newer(v, env!("CARGO_PKG_VERSION")) && msi_exists(v)) {
+                    bg.set(Status::Available(v));
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(60 * 60));
             }
         });
         u
@@ -55,7 +62,7 @@ impl Updater {
                 bg.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 bg.ctx.request_repaint();
             }
-            Err(e) => bg.set(Status::Failed(e)),
+            Err(e) => bg.set(Status::Failed(version, e)),
         });
     }
 }
@@ -82,6 +89,15 @@ fn latest() -> Option<String> {
     tag_version(stdout.rsplit('\n').next()?)
 }
 
+fn msi_exists(version: &str) -> bool {
+    system("curl.exe").args(["-sfLI", "-o", "NUL", &msi_url(version)]).status().is_ok_and(|s| s.success())
+}
+
+/// Asset name as built by .github/workflows/release.yml.
+fn msi_url(version: &str) -> String {
+    format!("{REPO}/releases/download/v{version}/notepad-{version}-x64.msi")
+}
+
 fn tag_version(url: &str) -> Option<String> {
     Some(url.rsplit_once("/tag/")?.1.trim().trim_start_matches('v').to_string())
 }
@@ -91,11 +107,10 @@ fn newer(latest: &str, current: &str) -> bool {
     parse(latest) > parse(current)
 }
 
-/// Asset name as built by .github/workflows/release.yml.
 fn run_installer(version: &str) -> Result<(), String> {
     let dir = std::env::temp_dir();
     let msi = dir.join(format!("notepad-{version}-x64.msi"));
-    let url = format!("{REPO}/releases/download/v{version}/notepad-{version}-x64.msi");
+    let url = msi_url(version);
     let downloaded = system("curl.exe").args(["-sfL", "-o"]).arg(&msi).arg(&url).status().is_ok_and(|s| s.success());
     if !downloaded {
         return Err(format!("Download failed: {url}"));
