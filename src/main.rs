@@ -9,6 +9,7 @@ mod files;
 mod instance;
 mod session;
 mod text;
+mod title_bar;
 mod update;
 
 use eframe::egui;

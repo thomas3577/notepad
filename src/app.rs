@@ -53,6 +53,8 @@ pub struct Notepad {
     /// Recently opened or saved files, most recent first.
     recent: Vec<PathBuf>,
     theme: egui::ThemePreference,
+    /// Whether the title bar was last made dark.
+    dark_title_bar: Option<bool>,
     /// Selection kept while the right mouse button is down on it (egui would collapse it).
     right_click_sel: Option<CCursorRange>,
     /// Editor selection as of the last frame it had focus. egui collapses the selection in
@@ -579,6 +581,11 @@ impl eframe::App for Notepad {
 
         if ctx.options(|o| o.theme_preference) != self.theme {
             ctx.set_theme(self.theme);
+        }
+        let dark = ctx.global_style().visuals.dark_mode;
+        if self.dark_title_bar != Some(dark) {
+            self.dark_title_bar = Some(dark);
+            crate::title_bar::set_dark(frame, dark);
         }
 
         // Esc closes Go to Line, else the find bar, else the menu bar; otherwise menus and popups need it
