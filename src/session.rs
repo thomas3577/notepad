@@ -19,6 +19,8 @@ pub struct Session {
     pub recent: Vec<PathBuf>,
     #[serde(default)]
     pub theme: eframe::egui::ThemePreference,
+    #[serde(default)]
+    pub hide_status_bar: bool,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -71,6 +73,7 @@ mod tests {
             no_wrap: true,
             recent: vec![r"C:\b.txt".into()],
             theme: eframe::egui::ThemePreference::Dark,
+            hide_status_bar: true,
         };
         assert_eq!(ron::from_str::<Session>(&to_string(&s)).unwrap(), s);
     }

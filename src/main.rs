@@ -58,6 +58,7 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             // We zoom only the text (like Windows Notepad), not egui's whole UI.
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+            title_bar::install(cc, &cc.egui_ctx);
             let incoming = match start {
                 instance::Start::Primary(listener) => {
                     let ctx = cc.egui_ctx.clone();

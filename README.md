@@ -6,7 +6,7 @@ A simple text editor written in Rust, built with [egui/eframe](https://github.co
 
 ## Features
 
-- Minimal UI: the menu bar is hidden; press Alt to show it, or use the ☰ button in the status bar
+- Minimal UI: tabs in the title bar, menu behind the ☰ button (or press Alt)
 - Tabs: open several files at once (Ctrl+N new tab, Ctrl+W close, Ctrl+Tab switch, middle-click closes);
   right-click a tab for Copy Path, Reveal in File Explorer, Close Tab, Close Other Tabs
 - Session restore, like Windows Notepad: closing the window keeps all tabs, including unsaved changes and Untitled tabs, and the next start brings them back (also window size, zoom, word wrap)
@@ -20,7 +20,7 @@ A simple text editor written in Rust, built with [egui/eframe](https://github.co
 - Theme: System, Light or Dark (View menu)
 - Go to line (Ctrl+G)
 - Text zoom (Ctrl+Plus/Minus/0, Ctrl+mouse wheel)
-- Status bar: line, column, zoom, encoding, line ending
+- Status bar: line, column, zoom, encoding, line ending; can be hidden (View menu)
 - Right-click menu in the editor: Undo, Redo, Cut, Copy, Paste, Select All
 - Find & Replace (Find Next, Replace, Replace All), case-insensitive by default ("Match case" option)
 - Encodings: UTF-8, UTF-8 with BOM, UTF-16 LE/BE, ANSI (Windows-1252)
@@ -50,7 +50,7 @@ A simple text editor written in Rust, built with [egui/eframe](https://github.co
 | Ctrl+Plus      | Zoom in          |
 | Ctrl+Minus     | Zoom out         |
 | Ctrl+0         | Reset zoom       |
-| Alt            | Show/hide menu   |
+| Alt            | Open menu        |
 
 ## Build and run
 
