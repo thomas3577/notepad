@@ -1,6 +1,6 @@
 [package]
 name = "notepad"
-version = "0.9.9"
+version = "0.9.10"
 edition = "2024"
 description = "A simple notepad for Windows"
 license = "MIT"
@@ -8,7 +8,7 @@ repository = "https://github.com/thomas3577/notepad"
 
 [dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "links", "persistence", "system_fonts"] }
-interprocess = "2.4.9"
+interprocess = "2.4.10"
 raw-window-handle = "0.6.2"
 rfd = "0.18.0"
 ron = "0.12.3"

@@ -336,6 +336,7 @@ impl Notepad {
     /// File/Edit/View/Encoding menus of the ☰ popup.
     fn menus(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, p: Parent) {
         ui.menu_button("File", |ui| {
+            menu_padding(ui);
             if ui.button("New Tab (Ctrl+N)").clicked() { self.new_tab(); }
             if ui.button("Open… (Ctrl+O)").clicked() { self.open(p); }
             if ui.button("Save (Ctrl+S)").clicked() { self.save(false, p); }
@@ -343,9 +344,16 @@ impl Notepad {
             if ui.button("Save All (Ctrl+Alt+S)").clicked() { self.save_all(p); }
             ui.separator();
             ui.menu_button("Recent Files", |ui| {
+                menu_padding(ui);
                 let mut open = None;
                 for path in &self.recent {
-                    if ui.button(path.display().to_string()).clicked() { open = Some(path.clone()); }
+                    // file name and its folder; full paths made the submenu cover the File menu
+                    let name = path.file_name().map_or(path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                    let label = match path.parent().and_then(|d| d.file_name()) {
+                        Some(dir) => format!("{name}  ({})", dir.to_string_lossy()),
+                        None => name,
+                    };
+                    if ui.button(label).on_hover_text(path.display().to_string()).clicked() { open = Some(path.clone()); }
                 }
                 if self.recent.is_empty() {
                     ui.weak("No recent files");
@@ -366,6 +374,7 @@ impl Notepad {
             if ui.button("Close Tab (Ctrl+W)").clicked() { self.close_tab(self.active, ctx, p); }
         });
         ui.menu_button("Edit", |ui| {
+            menu_padding(ui);
             if ui.button("Find/Replace (Ctrl+F)").clicked() {
                 (self.find_open, self.find_focus) = (true, true);
             }
@@ -373,6 +382,7 @@ impl Notepad {
             if ui.button("Go to Line… (Ctrl+G)").clicked() { self.goto = Some(String::new()); }
         });
         ui.menu_button("View", |ui| {
+            menu_padding(ui);
             let mut status_bar = !self.hide_status_bar;
             if ui.checkbox(&mut status_bar, "Status Bar").changed() { self.hide_status_bar = !status_bar; }
             let mut wrap = !self.no_wrap;
@@ -383,6 +393,7 @@ impl Notepad {
             if ui.button("Reset Zoom (Ctrl+0)").clicked() { self.zoom = 1.0; }
             ui.separator();
             ui.menu_button("Theme", |ui| {
+                menu_padding(ui);
                 use egui::ThemePreference as T;
                 for (theme, name) in [(T::System, "System"), (T::Light, "Light"), (T::Dark, "Dark")] {
                     ui.radio_value(&mut self.theme, theme, name);
@@ -390,6 +401,7 @@ impl Notepad {
             });
         });
         ui.menu_button("Encoding", |ui| {
+            menu_padding(ui);
             let d = self.doc_mut();
             enc_menu(ui, d);
             ui.separator();
@@ -435,20 +447,23 @@ impl Notepad {
     /// The title bar: ☰ menu, tabs, window buttons; the free space in between drags the window.
     fn caption(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, p: Parent) {
         const H: f32 = 32.0;
-        let (buttons, max_button) = crate::title_bar::window_buttons(ui, H);
-        ui.horizontal(|ui| {
+        // the buttons span the whole strip, including the margin above the tabs
+        let (buttons, max_button) = crate::title_bar::window_buttons(ui, H + ui.max_rect().top());
+        // exactly H tall: the tabs' ScrollArea would otherwise grow the row and push the tabs down
+        let row = egui::Layout::left_to_right(egui::Align::Min);
+        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), H), row, |ui| {
+            ui.set_max_height(H);
+            ui.spacing_mut().item_spacing.x = 5.0; // ☰ the same distance from the edge and the first tab
             // ☰ is painted: egui's default fonts don't contain the glyph
             let (rect, _) = ui.allocate_exact_size(egui::vec2(36.0, H), egui::Sense::hover());
             let resp = ui.interact(rect, menu_id(), egui::Sense::click());
             resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Menu"));
-            let v = ui.style().interact(&resp);
             let c = rect.center() + egui::vec2(0.0, -1.0);
-            if resp.hovered() {
-                ui.painter().rect_filled(egui::Rect::from_center_size(c, egui::vec2(30.0, 26.0)), 6.0, v.weak_bg_fill);
-            }
+            // no background on hover, the icon just gets brighter
+            let color = if resp.hovered() { ui.visuals().strong_text_color() } else { ui.visuals().weak_text_color() };
             for dy in [-4.0, 0.0, 4.0] {
                 let y = c.y + dy;
-                ui.painter().line_segment([egui::pos2(c.x - 7.0, y), egui::pos2(c.x + 7.0, y)], egui::Stroke::new(1.3, v.fg_stroke.color));
+                ui.painter().line_segment([egui::pos2(c.x - 7.0, y), egui::pos2(c.x + 7.0, y)], egui::Stroke::new(1.3, color));
             }
             let update_pending = self.hide_status_bar
                 && self.updater.as_ref().is_some_and(|u| matches!(u.status(), Status::Available(_) | Status::Failed(..)));
@@ -456,7 +471,10 @@ impl Notepad {
                 ui.painter().circle_filled(c + egui::vec2(8.0, -6.0), 3.0, ui.visuals().selection.bg_fill);
             }
             let resp = resp.on_hover_text(if update_pending { "Menu (Alt): update available" } else { "Menu (Alt)" });
-            egui::Popup::menu(&resp).show(|ui| self.menus(ui, ctx, p));
+            egui::Popup::menu(&resp).show(|ui| {
+                menu_padding(ui);
+                self.menus(ui, ctx, p);
+            });
 
             // keep some free caption to grab the window by, however many tabs are open
             let tabs_width = buttons[0].left() - ui.cursor().left() - 48.0;
@@ -491,6 +509,7 @@ impl Notepad {
 
         let area = egui::ScrollArea::horizontal()
             .max_width(max_width)
+            .content_margin(0)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -535,6 +554,7 @@ impl Notepad {
                         let resp = resp.on_hover_text(hover);
                         let close_resp = close_resp.on_hover_text("Close Tab (Ctrl+W)");
                         resp.context_menu(|ui| {
+                            menu_padding(ui);
                             if let Some(path) = &d.path {
                                 if ui.button("Copy Path").clicked() {
                                     ui.ctx().copy_text(path.display().to_string());
@@ -602,6 +622,11 @@ impl Notepad {
 }
 
 /// Opens File Explorer with the file selected.
+/// egui's menus put the text almost on the edge of the hover highlight.
+fn menu_padding(ui: &mut egui::Ui) {
+    ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
+}
+
 fn enc_menu(ui: &mut egui::Ui, d: &mut Doc) {
     for e in Enc::ALL {
         if ui.radio_value(&mut d.enc, e, e.name()).changed() { d.dirty = true; }
@@ -679,6 +704,17 @@ impl eframe::App for Notepad {
             self.check_external_changes(p);
         }
         self.was_focused = focused;
+
+        // Hand cursor over anything clickable: tabs, menu items, painted buttons (egui would show
+        // it only for egui Buttons). Not over draggable things like the editor or scroll areas.
+        let hovered = ctx.viewport(|v| v.interact_widgets.hovered.clone());
+        let clickable = hovered
+            .into_iter()
+            .filter_map(|id| ctx.read_response(id))
+            .any(|r| r.sense.senses_click() && !r.sense.senses_drag() && r.enabled());
+        if clickable {
+            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
 
         if ctx.options(|o| o.theme_preference) != self.theme {
             ctx.set_theme(self.theme);
@@ -758,13 +794,15 @@ impl eframe::App for Notepad {
 
         // No "discard changes?" on close: the session keeps them (eframe calls save() on exit).
 
-        // Tab strip in the title bar, a bit darker than the editor, so the active tab (editor color) stands out
-        let strip = {
-            let (c, f) = (ui.visuals().panel_fill, if ui.visuals().dark_mode { 0.72 } else { 0.92 });
+        // Tab strip and status bar: set off from the editor, so the active tab (editor color) stands out
+        let strip = if ui.visuals().dark_mode {
+            egui::Color32::from_rgb(0x25, 0x25, 0x26)
+        } else {
+            let (c, f) = (ui.visuals().panel_fill, 0.92);
             egui::Color32::from_rgb((c.r() as f32 * f) as u8, (c.g() as f32 * f) as u8, (c.b() as f32 * f) as u8)
         };
         egui::Panel::top("tabs")
-            .frame(egui::Frame::NONE.fill(strip).inner_margin(egui::Margin { left: 6, right: 6, top: 5, bottom: 0 }))
+            .frame(egui::Frame::NONE.fill(strip).inner_margin(egui::Margin { left: 6, right: 6, top: 4, bottom: 0 }))
             .show_separator_line(false)
             .show(ui, |ui| self.caption(ui, &ctx, p));
 
@@ -817,7 +855,7 @@ impl eframe::App for Notepad {
         self.zoom = self.zoom.clamp(0.5, 4.0);
 
         if !self.hide_status_bar {
-            egui::Panel::bottom("status").show(ui, |ui| {
+            egui::Panel::bottom("status").resizable(false).show_separator_line(false).frame(egui::Frame::side_top_panel(ui.style()).fill(strip)).show(ui, |ui| {
                 let cursor = egui::TextEdit::load_state(&ctx, self.doc().editor_id())
                     .and_then(|s| s.cursor.char_range())
                     .map_or(0, |r| r.primary.index.into());
@@ -825,14 +863,19 @@ impl eframe::App for Notepad {
                 let (ln, col) = line_col(&d.text, cursor);
                 let (zoom_text, enc_text) = (format!("{:.0}%", self.zoom * 100.0), d.enc.name());
                 let eol_text = if d.crlf { "CRLF" } else { "LF" };
-                // Flat button that opens a dropdown; background only on hover, like the ☰ button.
+                // Text that opens a dropdown: no frame, gray, brighter on hover, like the ☰ button.
                 let dropdown = |ui: &mut egui::Ui, text: &str, f: &mut dyn FnMut(&mut egui::Ui)| {
-                    ui.label("|");
-                    let button = egui::Button::new(text).frame_when_inactive(false);
-                    egui::menu::MenuButton::from_button(button).ui(ui, |ui| f(ui));
+                    ui.label(egui::RichText::new("|").color(ui.visuals().widgets.noninteractive.bg_stroke.color));
+                    let weak = ui.visuals().weak_text_color();
+                    ui.visuals_mut().widgets.inactive.fg_stroke.color = weak;
+                    let button = egui::Button::new(text).frame(false);
+                    egui::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                        menu_padding(ui);
+                        f(ui);
+                    });
                 };
                 ui.horizontal(|ui| {
-                    ui.label(format!("Ln {ln}, Col {col}"));
+                    ui.weak(format!("Ln {ln}, Col {col}"));
                     dropdown(ui, &zoom_text, &mut |ui| self.zoom_menu(ui));
                     dropdown(ui, enc_text, &mut |ui| enc_menu(ui, self.doc_mut()));
                     dropdown(ui, eol_text, &mut |ui| eol_menu(ui, self.doc_mut()));
@@ -981,6 +1024,7 @@ impl eframe::App for Notepad {
                         ctx.memory_mut(|m| m.request_focus(editor_id));
                     };
                     out.response.context_menu(|ui| {
+                        menu_padding(ui);
                         use egui::ViewportCommand as V;
                         for (label, redo) in [("Undo (Ctrl+Z)", false), ("Redo (Ctrl+Y)", true)] {
                             if !ui.button(label).clicked() {

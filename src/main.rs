@@ -58,6 +58,13 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             // We zoom only the text (like Windows Notepad), not egui's whole UI.
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+            cc.egui_ctx.style_mut_of(egui::Theme::Dark, |s| s.visuals.panel_fill = egui::Color32::from_rgb(0x1E, 0x1E, 0x1E));
+            // less rounding (menu items looked like pills)
+            cc.egui_ctx.all_styles_mut(|s| {
+                for w in [&mut s.visuals.widgets.inactive, &mut s.visuals.widgets.hovered, &mut s.visuals.widgets.active, &mut s.visuals.widgets.open] {
+                    w.corner_radius = egui::CornerRadius::same(3);
+                }
+            });
             title_bar::install(cc, &cc.egui_ctx);
             let incoming = match start {
                 instance::Start::Primary(listener) => {
